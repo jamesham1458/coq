@@ -1,0 +1,12 @@
+{
+  "name": "shot-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Basketball jump-shot form analyzer that runs in the browser",
+  "scripts": {
+    "test": "node --test test/",
+    "build": "node scripts/build.mjs",
+    "serve": "node scripts/serve.mjs"
+  }
+}

@@ -1097,35 +1097,38 @@ select {
 }
 
 .still {
-  position: relative;
   width: 100%;
   border-radius: var(--r-sm);
   background: var(--mat);
   overflow: hidden;
 }
 
+.still .frame {
+  position: relative;
+  width: 100%;
+}
+
 .still img,
 .still svg {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
+}
+
+.still img {
+  object-fit: contain;
 }
 
 .still svg {
   position: absolute;
   inset: 0;
-  height: 100%;
 }
 
 .still figcaption {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 14px 10px 6px;
-  background: linear-gradient(to top, rgba(15, 21, 19, 0.85), rgba(15, 21, 19, 0));
+  padding: 6px 10px 8px;
   color: var(--mat-ink);
   font-size: var(--t-xs);
+  line-height: 1.35;
 }
 
 .still.blank {
@@ -1142,6 +1145,12 @@ select {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr));
   gap: 8px;
+  align-items: start;
+}
+
+/* Wide (landscape) recordings need wider cells to stay readable. */
+.stills.wide {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
 }
 
 .section-head {

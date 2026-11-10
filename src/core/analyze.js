@@ -11,11 +11,13 @@ import { median } from './stats.js';
 export const SIDE_TOLERANCE_DEG = 27;
 /** A camera within this many degrees of the line of the shot counts as a front or back view. */
 export const FRONT_TOLERANCE_DEG = 32;
+/** Past this many degrees off the shot line, a front or back clip gets a warning. */
+export const OFF_AXIS_WARN_DEG = 15;
 
 /**
  * Direction the shooter is aiming, in the camera's ground plane, estimated from the
- * 3D landmarks: where the face points (eyes on the rim) and where the arm points at
- * full extension. Returns a unit vector { x, z } (x toward image-right, z away from
+ * 3D landmarks: mostly where the face points (eyes on the rim), with the extended arm
+ * as a minor vote because arms tend to finish slightly across the body. Returns a unit vector { x, z } (x toward image-right, z away from
  * the camera) or null when it cannot be estimated.
  */
 export function aimDirection(track, shots, hand) {
@@ -39,13 +41,14 @@ export function aimDirection(track, shots, hand) {
     const a = clamp(Math.round(s.i.set - 0.3 * fps), 0, n - 1);
     const b = clamp(Math.round(s.i.release), 0, n - 1);
     for (let i = a; i <= b; i += 2) {
+      if (!track.ok([LM.NOSE, LM.L_EAR, LM.R_EAR], i)) continue;
       const ex = (track.wx[LM.L_EAR][i] + track.wx[LM.R_EAR][i]) / 2;
       const ey = (track.wy[LM.L_EAR][i] + track.wy[LM.R_EAR][i]) / 2;
       const ez = (track.wz[LM.L_EAR][i] + track.wz[LM.R_EAR][i]) / 2;
       add(track.wx[LM.NOSE][i] - ex, track.wy[LM.NOSE][i] - ey, track.wz[LM.NOSE][i] - ez, 1);
     }
     const f = clamp(Math.round(s.i.full + 0.03 * fps), 0, n - 1);
-    add(track.wx[S.wrist][f] - track.wx[S.shoulder][f], track.wy[S.wrist][f] - track.wy[S.shoulder][f], track.wz[S.wrist][f] - track.wz[S.shoulder][f], 4);
+    if (!s.handsCut && track.ok([S.wrist, S.shoulder], f)) add(track.wx[S.wrist][f] - track.wx[S.shoulder][f], track.wy[S.wrist][f] - track.wy[S.shoulder][f], track.wz[S.wrist][f] - track.wz[S.shoulder][f], 1);
   }
   if (xs.length < 3) return null;
   const mx = median(xs);
@@ -67,7 +70,10 @@ export function viewFromAim(aim) {
     kind,
     facing: aim.x > 0.15 ? 1 : aim.x < -0.15 ? -1 : 0,
     chestToCamera: aim.z < 0,
+    /** degrees the camera is away from square-on to the shot (0 = a perfect side view) */
     offSideDeg: offSide,
+    /** degrees the camera is away from the line of the shot (0 = a perfect front or back view) */
+    offAxisDeg: offAxis,
   };
 }
 
@@ -78,22 +84,6 @@ export function poseAt(track, i) {
     out[j] = [sampleAt(track.px[j], i) / track.W, sampleAt(track.py[j], i) / track.H];
   }
   return out;
-}
-
-function frameProblems(raw) {
-  // How often parts of the body leave the picture, judged on the raw landmarks.
-  let seen = 0;
-  let feetCut = 0;
-  let handsCut = 0;
-  for (const f of raw.frames) {
-    if (!f.lm) continue;
-    seen++;
-    const lowFoot = Math.max(f.lm[LM.L_HEEL].y, f.lm[LM.R_HEEL].y, f.lm[LM.L_TOE].y, f.lm[LM.R_TOE].y);
-    const highHand = Math.min(f.lm[LM.L_WRIST].y, f.lm[LM.R_WRIST].y);
-    if (lowFoot > 0.995) feetCut++;
-    if (highHand < 0.005) handsCut++;
-  }
-  return { feetCut: seen ? feetCut / seen : 0, handsCut: seen ? handsCut / seen : 0 };
 }
 
 /**
@@ -135,7 +125,10 @@ export function analyzeClip(raw, opts = {}) {
     };
   };
   if (track.n < 10) return empty('tooShort');
-  if (track.detectedFraction < 0.3 || !(track.bodyH > 0)) return empty('noPerson');
+  if (track.detectedFraction < 0.3) return empty('noPerson');
+  // Without the hips in view there is no body scale to measure against, and the legs
+  // are certainly out of the picture too.
+  if (track.hipsSeen < 0.5 || !(track.torso > 0) || !(track.bodyH > 0)) return empty('legsCut');
 
   const declared = opts.declaredView || null;
   // Start from the stated angle when there is one; front and back are told apart automatically.
@@ -143,24 +136,19 @@ export function analyzeClip(raw, opts = {}) {
   else if (declared === 'front' || declared === 'back') track.setView({ kind: track.view.chestToCamera ? 'front' : 'back' });
 
   const shotOpts = { heightM: opts.heightM };
-  let hand = opts.hand;
-  let shots;
-  if (hand) {
-    shots = findShots(track, hand, shotOpts);
-    if (!shots.length) {
-      const other = findShots(track, otherSide(hand), shotOpts);
-      if (other.length) {
-        warn('otherHand', otherSide(hand));
-        hand = otherSide(hand);
-        shots = other;
-      }
-    }
-  } else {
+  // Both arms are always examined. The stated hand is used unless the other one is
+  // clearly the one shooting (a wrong profile, or a mirrored recording).
+  const pickHand = () => {
     const g = guessHand(track, shotOpts);
-    hand = g.hand;
-    shots = g.shots;
-    if (shots.length && !g.confident) warn('handUnclear');
-  }
+    if (!opts.hand) return { hand: g.hand, shots: g.shots, switched: false, unclear: g.shots.length > 0 && !g.confident };
+    const stated = g[opts.hand];
+    const other = g[otherSide(opts.hand)];
+    const switchHands = other.length > 0 && (stated.length === 0 || (g.hand !== opts.hand && g.confident && other.length >= stated.length));
+    return switchHands ? { hand: otherSide(opts.hand), shots: other, switched: true, unclear: false } : { hand: opts.hand, shots: stated, switched: false, unclear: false };
+  };
+  let picked = pickHand();
+  let hand = picked.hand;
+  let shots = picked.shots;
 
   // Check the camera angle against where the shooter is actually aiming.
   let detected = null;
@@ -169,36 +157,50 @@ export function analyzeClip(raw, opts = {}) {
     const v = viewFromAim(aim);
     detected = v.kind;
     const before = track.view.kind;
-    const declaredFrontal = declared === 'front' || declared === 'back';
-    let next = before;
-    if (!declared) next = v.kind;
-    else if (declared === 'side' && (v.kind === 'front' || v.kind === 'back')) {
-      next = v.kind;
-      warn('viewMismatch', `side:${v.kind}`);
-    } else if (declaredFrontal && v.kind === 'side') {
-      next = 'side';
-      warn('viewMismatch', `${declared}:side`);
-    } else if (declaredFrontal && (v.kind === 'front' || v.kind === 'back')) {
-      next = v.kind;
-    } else if (v.kind === 'diagonal') {
-      warn('angledCamera', String(Math.round(v.offSideDeg)));
-    }
-    const patch = { kind: next, chestToCamera: v.chestToCamera };
-    if (v.facing) patch.facing = v.facing;
     const planarBefore = track.planar;
+    let next;
+    if (v.kind === 'diagonal') {
+      // Whatever angle was stated, the camera is not square to anything: image-plane
+      // angles would be wrong, so fall back to the 3D estimates and say so.
+      next = 'diagonal';
+      const nearerSide = v.offSideDeg <= v.offAxisDeg;
+      warn('angledCamera', `${Math.round(nearerSide ? v.offSideDeg : v.offAxisDeg)}:${nearerSide ? 'side' : 'line'}`);
+    } else {
+      next = v.kind;
+      if (declared === 'side' && v.kind !== 'side') warn('viewMismatch', `side:${v.kind}`);
+      else if ((declared === 'front' || declared === 'back') && v.kind === 'side') warn('viewMismatch', `${declared}:side`);
+      if ((v.kind === 'front' || v.kind === 'back') && v.offAxisDeg > OFF_AXIS_WARN_DEG) warn('offAxis', String(Math.round(v.offAxisDeg)));
+    }
+    const patch = { kind: next, chestToCamera: v.chestToCamera, aim, offAxisDeg: v.offAxisDeg, offSideDeg: v.offSideDeg };
+    if (v.facing) patch.facing = v.facing;
     track.setView(patch);
-    if (track.planar !== planarBefore || next !== before) shots = findShots(track, hand, shotOpts);
+    if (track.planar !== planarBefore || next !== before) {
+      picked = pickHand();
+      hand = picked.hand;
+      shots = picked.shots;
+    }
   }
+  if (picked.switched) warn('otherHand', hand);
+  if (picked.unclear) warn('handUnclear');
 
   if (track.fps < 24) warn('lowFps', String(Math.round(track.fps)));
   if (track.bodyH < 0.28 * track.H) warn('smallInFrame');
-  const cut = frameProblems(raw);
-  if (cut.feetCut > 0.15) warn('feetCut');
-  if (cut.handsCut > 0.03) warn('handsCut');
+  if (shots.some((s) => s.jump === null)) warn('feetCut');
+  if (shots.some((s) => s.handsCut)) warn('handsCut');
   if (track.view.kind === 'side' && track.view.nearSide && track.view.nearSide !== hand && shots.length) warn('offHandSide');
-  const flights = shots.filter((s) => s.jump).map((s) => s.flight);
-  if (flights.length && median(flights) > 0.85) warn('slowMotion');
-  if (!shots.length) warn('noShots');
+  // Slow-motion video stretches everything: implausibly long flights, or a push that
+  // takes several times longer than an arm can take.
+  const flights = shots.filter((s) => s.jump === true).map((s) => s.flight);
+  const pushes = shots.map((s) => s.t.full - s.t.set).filter(Number.isFinite);
+  if ((flights.length && median(flights) > 0.75) || shots.some((s) => Number.isFinite(s.longAir)) || (pushes.length && median(pushes) > 0.5)) warn('slowMotion');
+  if (!shots.length) {
+    // Nothing moved like a shot at normal speed. If the same motions are there at a
+    // fraction of the speed, the recording is slow motion.
+    const crawl = findShots(track, hand, { ...shotOpts, minExtensionSpeed: 12 });
+    const slowPush = crawl.map((s) => s.t.full - s.t.set).filter(Number.isFinite);
+    if (slowPush.length && median(slowPush) > 0.5 && !warnings.some((w) => w.code === 'slowMotion')) warn('slowMotion');
+    warn('noShots');
+  }
 
   for (const s of shots) {
     s.metrics = measureShot(track, s, shotOpts);

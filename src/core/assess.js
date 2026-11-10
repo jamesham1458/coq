@@ -8,6 +8,9 @@ import { summarize, sdBounds, mean, sd } from './stats.js';
 
 const CONF_RANK = { high: 3, medium: 2, low: 1 };
 
+/** Measurements that exist only when the shooter leaves the floor with the feet in view. */
+const JUMP_METRICS = ['jumpHeight', 'driftForward', 'driftSide', 'releaseVsApex'];
+
 /**
  * Judge one value against a metric's ranges.
  * @returns {{ status: 'good'|'watch'|'fix'|'info', score: number, direction: 'low'|'high'|null }}
@@ -93,6 +96,7 @@ function commonConfidence(confs) {
  * @property {string} view                      'side' | 'front' | 'back' | 'diagonal'
  * @property {Record<string, {value:number, conf:string}>} metrics
  * @property {boolean|null} [made]              true = make, false = miss, null/undefined = not marked
+ * @property {boolean|null} [jump]              true = left the floor, false = feet stayed down, null = feet not in view
  */
 
 /**
@@ -118,8 +122,22 @@ export function assessSession(shots, ctx = {}) {
         break;
       }
     }
+    // A follow-through cut off by the end of the clip (or by the next shot) is only a
+    // lower bound. Below the target it says nothing about whether the hold was long
+    // enough, so it is left out rather than judged as a short hold.
+    if (spec.id === 'followHold') {
+      const floor = (rangesFor(spec.id, ctx).ideal || [0])[0];
+      rows = rows.filter((s) => !(s.metrics.followHold.note === 'capped' && s.metrics.followHold.value < floor));
+    }
+    // Release timing against the top of a jump only means something when there is a jump.
+    let noJump = false;
+    if (spec.id === 'releaseVsApex') {
+      if (rows.length && rows.every((s) => s.jump === false)) noJump = true;
+      else rows = rows.filter((s) => s.jump !== false);
+    }
     if (!rows.length) {
-      missing.push({ id: spec.id, needs: groups[0] });
+      const inView = shots.some((s) => groups.flat().includes(s.view));
+      missing.push({ id: spec.id, needs: groups[0], reason: !inView ? 'view' : JUMP_METRICS.includes(spec.id) ? 'jump' : 'unseen' });
       continue;
     }
     const values = rows.map((s) => s.metrics[spec.id].value);
@@ -127,6 +145,17 @@ export function assessSession(shots, ctx = {}) {
     const conf = commonConfidence(rows.map((s) => s.metrics[spec.id].conf));
     const ranges = rangesFor(spec.id, ctx);
     const j = judge(spec, sum.mean, ranges);
+    // A rough reading can point at a problem but cannot convict: readings that are low
+    // confidence, or estimates taken from a camera angle that is not the right one for
+    // them, are reported as something to watch and check on video, never as a fix.
+    const rough = conf === 'low' || (used !== groups[0] && conf !== 'high');
+    if (j.status === 'fix' && rough) j.status = 'watch';
+    // With the feet on the floor there is no apex to release against: report it, do not judge it.
+    if (noJump) {
+      j.status = 'info';
+      j.score = NaN;
+      j.direction = null;
+    }
     const spread = rateSpread(spec, sum.sd, sum.n);
     const capped = rows.some((s) => s.metrics[spec.id].note === 'capped');
     metrics[spec.id] = {
@@ -143,6 +172,8 @@ export function assessSession(shots, ctx = {}) {
       fallback: used !== groups[0],
       conf,
       capped,
+      /** true when these shots had no jump, so "apex" means the top of the body's rise */
+      noJump,
       // the target ranges this value was judged against (they can depend on shot distance)
       ideal: ranges.ideal || null,
       ok: ranges.ok || null,
@@ -209,8 +240,11 @@ export function assessSession(shots, ctx = {}) {
     }
   }
 
+  const known = shots.filter((s) => s.jump === true || s.jump === false);
   return {
     shotCount: shots.length,
+    /** true when most shots (of those whose feet were in view) left the floor */
+    jumpShots: known.length ? known.filter((s) => s.jump).length * 2 >= known.length : true,
     byView,
     metrics,
     missing,
@@ -258,7 +292,7 @@ export function toShotRecord(shot, clipIndex) {
   for (const [id, m] of Object.entries(shot.metrics)) {
     metrics[id] = m.note ? { value: round(m.value), conf: m.conf, note: m.note } : { value: round(m.value), conf: m.conf };
   }
-  return { clip: clipIndex, view: shot.view, t: round(shot.t.release), jump: !!shot.jump, made: shot.made ?? null, metrics };
+  return { clip: clipIndex, view: shot.view, t: round(shot.t.release), jump: shot.jump === true ? true : shot.jump === false ? false : null, made: shot.made ?? null, metrics };
 }
 
 function round(v) {

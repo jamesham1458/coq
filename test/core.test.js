@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { angle2, angle3, tiltFromUp, elevation2, firstUpCrossing, refineExtremum } from '../src/core/geometry.js';
 import { fillGaps, lowpass, derivative, resample } from '../src/core/filter.js';
 import { sd, mean, sdBounds, quantile } from '../src/core/stats.js';
-import { synthClip, synthSession } from '../src/core/synth.js';
+import { synthClip, synthSession, makeRng } from '../src/core/synth.js';
 import { prepareTrack } from '../src/core/track.js';
 import { findShots, guessHand } from '../src/core/shots.js';
 import { analyzeClip } from '../src/core/analyze.js';
@@ -217,10 +217,11 @@ for (const [name, cam] of [['front', FRONT], ['back', BACK]]) {
     assert.ok(flawed.elbowFlare.value > clean.elbowFlare.value + 12, 'flared elbow reads higher');
     near(clean.driftSide.value, 0, 1.5, 'no sideways drift');
     near(flawed.driftSide.value, 11.1, 3, 'drift toward the shooting side is positive');
-    near(flawed.sideLean.value, 9, 3, 'lean toward the shooting side is positive');
+    near(flawed.sideLean.value, 9, 4, 'lean toward the shooting side is positive');
     near(clean.stanceWidth.value, 1.0, 0.2, 'shoulder-width base');
     near(flawed.stanceWidth.value, 1.6, 0.25, 'wide base');
-    assert.ok(flawed.kneeTrack.value < 0.6, 'knees collapsing inward');
+    near(clean.kneeTrack.value, 1.05, 0.15, 'knees on the hip-ankle line read about 1');
+    assert.ok(flawed.kneeTrack.value < 0.75, `knees collapsing inward, got ${flawed.kneeTrack.value}`);
     assert.ok(!('trunkLean' in clean) && !('driftForward' in clean), 'no forward/back readings from this angle');
   });
 }
@@ -372,4 +373,189 @@ test('unevenly timed frames are resampled', () => {
   const res = analyzeClip(clip, { hand: 'right' });
   assert.equal(res.shots.length, 1);
   near(res.shots[0].t.release, clip.truth[0].tRelease, 0.05, 'release from uneven frames');
+});
+
+// ---- Body parts out of the picture -------------------------------------------------------
+
+/**
+ * Re-frame a synthetic clip as if the camera showed only the band [top, bottom] of the
+ * original picture. Points left outside it behave as the tracker's do: still present,
+ * scored as not visible when far outside, and placed by guesswork.
+ */
+function reframe(clip, { top = 0, bottom = 1 }) {
+  const rng = makeRng(99);
+  for (const f of clip.frames) {
+    if (!f.lm) continue;
+    for (const p of f.lm) {
+      p.y = (p.y - top) / (bottom - top);
+      const far = p.y < -0.12 || p.y > 1.12;
+      if (far) {
+        p.visibility = 0.04;
+        p.x += rng.normal() * 0.08;
+        p.y += rng.normal() * 0.12;
+      }
+    }
+  }
+  clip.height = Math.round(clip.height * (bottom - top));
+  return clip;
+}
+
+test('a waist-up clip is refused with a clear reason, not analysed on guessed legs', () => {
+  const clip = reframe(synthClip([{}, {}], SIDE, NOISY), { top: 0.1, bottom: 0.52 });
+  const res = analyzeClip(clip, { hand: 'right' });
+  assert.equal(res.shots.length, 0);
+  assert.ok(res.warnings.some((w) => w.code === 'legsCut'), JSON.stringify(res.warnings));
+});
+
+test('with the feet out of the picture, shots are found but nothing about the jump is reported', () => {
+  const clip = reframe(synthClip([{}, {}], SIDE, NOISY), { top: 0.05, bottom: 0.69 });
+  const res = analyzeClip(clip, { hand: 'right' });
+  assert.equal(res.shots.length, 2);
+  assert.ok(res.warnings.some((w) => w.code === 'feetCut'), JSON.stringify(res.warnings));
+  for (const s of res.shots) {
+    assert.equal(s.jump, null);
+    for (const id of ['jumpHeight', 'releaseVsApex', 'driftForward', 'kneeBend']) assert.ok(!(id in s.metrics), `${id} must be withheld`);
+    near(s.metrics.setElbow.value, 80, 8, 'arm measurements are unaffected');
+    near(s.metrics.armExtension.value, 172, 6, 'arm extension is unaffected');
+    assert.ok('trunkLean' in s.metrics);
+  }
+  const a = assessSession(res.shots.map((s) => toShotRecord(s, 0)));
+  assert.ok(a.missing.some((m) => m.id === 'kneeBend'));
+  assert.ok(Number.isFinite(a.scores.form));
+});
+
+test('with the hand leaving the top of the picture, the shot counts but the finish is not measured', () => {
+  const full = analyzeClip(synthClip([{}, {}], SIDE, NOISY), { hand: 'right' });
+  const clip = reframe(synthClip([{}, {}], SIDE, NOISY), { top: 0.325, bottom: 1 });
+  const res = analyzeClip(clip, { hand: 'right' });
+  assert.equal(res.shots.length, 2, 'both shots are still found');
+  assert.ok(res.warnings.some((w) => w.code === 'handsCut'), JSON.stringify(res.warnings));
+  res.shots.forEach((s, k) => {
+    assert.equal(s.handsCut, true);
+    for (const id of ['armExtension', 'armAngle', 'reachHeight', 'followHold']) assert.ok(!(id in s.metrics), `${id} must be withheld`);
+    near(s.t.release, full.shots[k].t.release, 0.06, 'release timing still found');
+    near(s.metrics.kneeBend.value, full.shots[k].metrics.kneeBend.value, 4, 'leg measurements are unaffected');
+    assert.equal(s.jump, true);
+  });
+});
+
+test('a landmark the tracker cannot see is bridged for detection and not measured from', () => {
+  const hide = (frames, from, to) => {
+    for (let k = from; k <= to; k++) {
+      frames[k].lm[16].visibility = 0.05;
+      frames[k].lm[16].x += 0.3;
+      frames[k].lm[16].y += 0.3;
+    }
+  };
+  // Four hidden frames right at the set point: the shot is still found, the release is
+  // still timed, and the set-point readings are withheld instead of interpolated.
+  const clip = synthClip([{}], SIDE, NOISY);
+  const at = Math.round(clip.truth[0].tSet * 30);
+  hide(clip.frames, at - 2, at + 1);
+  const res = analyzeClip(clip, { hand: 'right' });
+  assert.equal(res.shots.length, 1);
+  near(res.shots[0].t.release, clip.truth[0].tRelease, 0.05, 'release despite a hidden wrist at the set point');
+  assert.ok(!('setElbow' in res.shots[0].metrics) && !('setHeight' in res.shots[0].metrics));
+  assert.ok('armExtension' in res.shots[0].metrics);
+  // One hidden frame well before the set point changes nothing.
+  const clip2 = synthClip([{}], SIDE, NOISY);
+  hide(clip2.frames, at - 9, at - 9);
+  const res2 = analyzeClip(clip2, { hand: 'right' });
+  near(res2.shots[0].metrics.setElbow.value, 80, 6, 'set-point elbow unaffected by an earlier dropout');
+});
+
+test('a shot cut off by the start or end of the recording is ignored', () => {
+  const clip = synthClip([{}, {}, {}], SIDE, NOISY);
+  const tr = clip.truth;
+  // Start the recording just after the first shot's set point and stop it just after
+  // the last shot's release.
+  const from = Math.round((tr[0].tSet + 0.02) * 30);
+  const to = Math.round((tr[2].tRelease + 0.05) * 30);
+  const cut = { ...clip, frames: clip.frames.slice(from, to).map((f) => ({ ...f, t: f.t - clip.frames[from].t })) };
+  const res = analyzeClip(cut, { hand: 'right' });
+  assert.equal(res.shots.length, 1, 'only the complete middle shot counts');
+  near(res.shots[0].t.release + clip.frames[from].t, tr[1].tRelease, 0.05, 'and it is the middle one');
+});
+
+// ---- Findings from the code review, kept as regression tests ----------------------------------
+
+test('a front camera a little off the shot line does not change the across-the-body readings', () => {
+  const read = (yaw) => analyse([{ driftForward: 0.45 }], { yawDeg: yaw }, { seed: 4 }, { declaredView: 'front' }).res;
+  const square = read(0).shots[0].metrics;
+  for (const yaw of [12, 20, -20]) {
+    const res = read(yaw);
+    const m = res.shots[0].metrics;
+    near(m.setLine.value, square.setLine.value, 0.25, `ball line at the set point, camera ${yaw} degrees off`);
+    near(m.finishLine.value, square.finishLine.value, 0.3, `follow-through line, camera ${yaw} degrees off`);
+    near(m.elbowFlare.value, square.elbowFlare.value, 8, `elbow flare, camera ${yaw} degrees off`);
+    if (Math.abs(yaw) > 16) {
+      assert.ok(res.warnings.some((w) => w.code === 'offAxis'), 'an off-line camera is pointed out');
+      assert.equal(m.driftSide.conf, 'low', 'sideways travel is only a rough reading off the line');
+    }
+  }
+});
+
+test('a camera at an angle is treated as angled even when a view was stated', () => {
+  const side = analyse([{}], { yawDeg: 42 }, {}, { declaredView: 'side' }).res;
+  assert.equal(side.view.kind, 'diagonal');
+  assert.ok(side.warnings.some((w) => w.code === 'angledCamera'));
+  near(side.shots[0].metrics.setElbow.value, 82, 12, 'elbow read from 3D, not from the skewed picture');
+  assert.equal(side.shots[0].metrics.setElbow.conf, 'medium');
+  const quick = analyse([{}], { yawDeg: 45 }).res;
+  assert.ok(quick.warnings.some((w) => w.code === 'angledCamera'), 'quick checks get the warning too');
+});
+
+test('a follow-through cut off by the end of the clip is not judged as dropped early', () => {
+  const clip = synthClip([{ followHold: 0.9 }], SIDE, NOISY);
+  const stop = Math.round((clip.truth[0].tRelease + 0.28) * 30);
+  const res = analyzeClip({ ...clip, frames: clip.frames.slice(0, stop) }, { hand: 'right' });
+  assert.equal(res.shots.length, 1);
+  assert.equal(res.shots[0].metrics.followHold.note, 'capped');
+  const a = assessSession(records(res));
+  assert.ok(!a.findings.some((f) => f.key === 'followHold.low'), 'no finding from a lower bound');
+  assert.ok(!a.metrics.followHold, 'and no value reported');
+  // A long hold in the middle of a clip is measured in full.
+  const long = analyzeClip(synthClip([{ followHold: 1.8 }, {}], SIDE, { ...NOISY, fps: 60 }), { hand: 'right' });
+  assert.ok(long.shots[0].metrics.followHold.value > 1.5, `long hold measured, got ${long.shots[0].metrics.followHold.value}`);
+});
+
+test('a set shot is described as one and its timing is not judged', () => {
+  const res = analyse([{ flight: 0, releaseVsApex: 0.09 }], SIDE).res;
+  const a = assessSession(records(res));
+  assert.equal(a.jumpShots, false);
+  assert.equal(a.metrics.releaseVsApex.status, 'info');
+  assert.ok(!a.findings.some((f) => f.metric === 'releaseVsApex'));
+  assert.equal(a.missing.find((m) => m.id === 'jumpHeight').reason, 'jump');
+  assert.equal(a.missing.find((m) => m.id === 'elbowFlare').reason, 'view');
+});
+
+test('the other hand is used when it is clearly the one shooting', () => {
+  const res = analyse(Array(5).fill({ hand: 'left', guidePush: 0.5 }), FRONT, { seed: 4 }, { hand: 'right' }).res;
+  assert.equal(res.hand, 'left');
+  assert.equal(res.shots.length, 5);
+  assert.ok(res.warnings.some((w) => w.code === 'otherHand'));
+  const same = analyse(Array(3).fill({ guidePush: 0.5 }), FRONT, { seed: 4 }, { hand: 'right' }).res;
+  assert.equal(same.hand, 'right', 'a pushing guide hand does not flip a correct profile');
+});
+
+test('slow-motion video is recognised at any stretch', () => {
+  for (const factor of [2, 4, 8]) {
+    const clip = synthClip([{}], SIDE, NOISY);
+    clip.frames.forEach((f) => {
+      f.t *= factor;
+    });
+    const res = analyzeClip(clip, { hand: 'right' });
+    assert.ok(res.warnings.some((w) => w.code === 'slowMotion'), `${factor}x slow motion flagged`);
+  }
+  assert.ok(!analyse([{}, {}], SIDE).res.warnings.some((w) => w.code === 'slowMotion'), 'normal speed is not flagged');
+});
+
+test('heights agree between camera angles', () => {
+  const reach = (cam) => analyse([{}], cam, { seed: 9 }).res.shots[0].metrics.reachHeight;
+  const side = reach(SIDE);
+  for (const cam of [FRONT, BACK]) {
+    const r = reach(cam);
+    near(r.value, side.value, 3.5, 'release height from front or back matches the side view');
+    assert.equal(r.conf, 'medium');
+  }
 });

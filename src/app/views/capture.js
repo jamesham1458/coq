@@ -37,16 +37,24 @@ export function warningText(w, clip) {
       const [said, seen] = String(w.detail || '').split(':');
       return `This clip was added as a ${said} view but looks like it was filmed from ${VIEW_WORDS[seen] || seen}. It was analysed as a ${seen} view.`;
     }
-    case 'angledCamera':
-      return `The camera is about ${w.detail}° off square. Angles are less exact from here; move the camera square to the line of the shot.`;
+    case 'angledCamera': {
+      const [deg, ref] = String(w.detail || '').split(':');
+      return ref === 'line'
+        ? `The camera is about ${deg}° off the line of the shot, which is too far to count as a front or back view. Angles were estimated in 3D and across-the-body readings were left out. Put the camera on the line between you and the basket.`
+        : `The camera is about ${deg}° off square to the shot, which is too far to count as a side view. Angles were estimated in 3D and are less exact. Put the camera square to the line of the shot.`;
+    }
+    case 'offAxis':
+      return `The camera is about ${w.detail}° to one side of the line of the shot. The readings allow for it, but sideways travel is only rough from here. Put the camera on the line between you and the basket.`;
     case 'lowFps':
       return `This video has only ${w.detail} frames per second, so timing numbers are rough. 60 is best.`;
     case 'smallInFrame':
       return 'You are small in the picture. Move the camera closer so your body fills more than a third of its height.';
+    case 'legsCut':
+      return 'Your hips and legs are out of the picture, so there is nothing to measure against. Move the camera back until your whole body fits, with room above your head.';
     case 'feetCut':
-      return 'Your feet leave the bottom of the picture. Jump and landing measurements may be off.';
+      return 'Your feet are out of the picture for some shots, so jump timing, landing and travel were not measured for them. Move the camera back or tilt it down.';
     case 'handsCut':
-      return 'Your hands leave the top of the picture. Release measurements may be off. Leave more room above your head.';
+      return 'Your shooting hand leaves the top of the picture at the release on some shots, so release height, arm angle and follow-through were not measured for them. Leave more room above your head.';
     case 'offHandSide':
       return 'This was filmed from your guide-hand side, so your shooting arm is partly hidden and arm readings are less exact. Film from your shooting-hand side.';
     case 'slowMotion':
@@ -156,8 +164,13 @@ export function captureView(app, mode) {
       });
       clip.slot = slot.id;
       if (!clip.shots.length) {
-        const reasons = clip.warnings.filter((w) => w.code !== 'noShots').map((w) => warningText(w, clip));
-        draft.error = { slot: slot.id, messages: [warningText({ code: clip.warnings.some((w) => w.code === 'noPerson') ? 'noPerson' : 'noShots' }, clip), ...reasons.filter((r, i, all) => all.indexOf(r) === i)] };
+        // A blocking reason replaces the generic "no shot found"; other notes follow it.
+        const BLOCKING = ['tooShort', 'noPerson', 'legsCut', 'slowMotion'];
+        const blocking = clip.warnings.filter((w) => BLOCKING.includes(w.code));
+        const others = clip.warnings.filter((w) => !BLOCKING.includes(w.code) && w.code !== 'noShots');
+        const lead = blocking.length ? blocking : [{ code: 'noShots' }];
+        const texts = [...lead, ...others].map((w) => warningText(w, clip));
+        draft.error = { slot: slot.id, messages: texts.filter((r, i, all) => all.indexOf(r) === i) };
         releaseClip(clip);
       } else {
         if (mode === 'quick') {

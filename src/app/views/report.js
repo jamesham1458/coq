@@ -166,6 +166,7 @@ function framesBrowser(clips) {
   const picker = h('div', { class: 'row', role: 'group', 'aria-label': 'Choose a shot' });
   const paint = () => {
     const { clip, shot } = list[current];
+    grid.className = `stills ${clip.aspect > 1.1 ? 'wide' : ''}`;
     mount(grid, Object.keys(STILL_NAMES).filter((id) => shot.stills[id]).map((id) => stillFigure({ id, still: shot.stills[id], shot, aspect: clip.aspect, plant: shot.stills.dip })));
     mount(picker, list.map((it, k) => h('button', { class: `btn ${k === current ? '' : 'ghost'}`, style: { minHeight: '34px', padding: '4px 10px' }, type: 'button', 'aria-pressed': k === current ? 'true' : 'false', onClick: () => {
       current = k;
@@ -438,8 +439,16 @@ export function reportView(app) {
       h('div', { class: 'metrics' }, rows.map((m) => metricRow(m, ctx))),
     );
   });
-  const missingByNeed = {};
-  for (const x of a.missing) (missingByNeed[x.needs.join(' or ')] ||= []).push(METRIC_BY_ID[x.id].label);
+  // Why each absent measurement is absent: wrong camera angle, no jump, or body parts out of view.
+  const missingBy = {};
+  for (const x of a.missing) {
+    const why = x.reason === 'jump'
+      ? 'Not measured, because no jump was seen or your feet were out of the picture'
+      : x.reason === 'unseen'
+        ? 'Not measured, because the body parts it needs were out of the picture or hidden'
+        : `Not measured here, because it needs a ${x.needs.join(' or ')} view`;
+    (missingBy[why] ||= []).push(METRIC_BY_ID[x.id].label);
+  }
   const ids = Object.keys(a.metrics);
   const measureSection = h(
     'section',
@@ -454,7 +463,7 @@ export function reportView(app) {
         )
       : null,
     measured,
-    Object.entries(missingByNeed).map(([need, labels]) => notice('info', `Not measured here, because it needs a ${need} view: ${labels.join(', ').toLowerCase()}.`)),
+    Object.entries(missingBy).map(([why, labels]) => notice('info', `${why}: ${labels.join(', ').toLowerCase()}.`)),
     h('details', { class: 'more' }, h('summary', null, 'Shot-by-shot numbers'), h('div', { style: { marginTop: '10px' } }, shotTable(session, ids))),
   );
 
@@ -484,7 +493,7 @@ export function reportView(app) {
       h('li', null, 'Readings marked Estimate or Low confidence point in the right direction but are less exact. Check them against the frames before changing anything.'),
       h('li', null, 'Targets are ranges that proficient shooters share. Being inside one does not make a shot go in, and being just outside is not a fault.'),
       session.shots.length > 1 ? h('li', null, 'Consistency figures from fewer than about 8 shots are rough. The likely range next to each one shows how rough.') : null,
-      warnings.length ? h('li', null, `Recording notes for this session: ${warnings.map((c) => ({ lowFps: 'low frame rate', smallInFrame: 'shooter small in the picture', feetCut: 'feet out of frame', handsCut: 'hands out of frame', offHandSide: 'filmed from the guide-hand side', slowMotion: 'possible slow motion', angledCamera: 'camera not square', viewMismatch: 'clip filed under a different angle', otherHand: 'shooting hand differed from the profile', handUnclear: 'shooting hand unclear' }[c] || c)).join(', ')}.`) : null,
+      warnings.length ? h('li', null, `Recording notes for this session: ${warnings.map((c) => ({ lowFps: 'low frame rate', smallInFrame: 'shooter small in the picture', feetCut: 'feet out of the picture on some shots', handsCut: 'shooting hand out of the picture at release on some shots', offHandSide: 'filmed from the guide-hand side', slowMotion: 'possible slow motion', angledCamera: 'camera at an angle', offAxis: 'camera to one side of the shot line', viewMismatch: 'clip filed under a different angle', otherHand: 'shooting hand differed from the profile', handUnclear: 'shooting hand unclear' }[c] || c)).join(', ')}.`) : null,
     ),
   );
 

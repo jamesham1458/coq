@@ -7,10 +7,14 @@
 //   any       heights and timing, plus joint angles from the 3D landmarks (less exact)
 
 import { LM, sideOf, otherSide } from './landmarks.js';
-import { sampleAt, clamp, tiltFromUp, elevation2, elevation3, argMax } from './geometry.js';
+import { sampleAt, clamp, tiltFromUp, elevation2, elevation3, argMax, toDeg } from './geometry.js';
+import { TORSO_TO_HEIGHT } from './track.js';
 import { median } from './stats.js';
 
 const G = 9.81;
+
+/** Up to this many degrees off the shot line, a front or back camera is treated as square to it. */
+export const OFF_AXIS_OK_DEG = 12;
 
 /** Median of a series over [a, b] (fractional indices, clamped). */
 function windowMedian(arr, a, b) {
@@ -56,28 +60,54 @@ export function measureShot(track, shot, opts = {}) {
   // ---- Timing -------------------------------------------------------------------------
   put('tempo', shot.t.release - shot.t.dip, Number.isFinite(i.dip) ? 'high' : 'low');
   put('setPause', shot.setPause * 1000, 'medium');
-  if (Number.isFinite(i.apex)) {
+  if (Number.isFinite(i.apex) && shot.jump !== null) {
     put('releaseVsApex', (shot.t.release - shot.t.apex) * 1000, shot.jump ? 'medium' : 'low');
   }
-  put('followHold', shot.t.followEnd - shot.t.release, shot.followCapped ? 'medium' : 'high', shot.followCapped ? 'capped' : undefined);
-  if (shot.jump) put('jumpHeight', ((G * shot.flight * shot.flight) / 8) * 100, 'medium');
+  // Anything read from the extended arm needs the wrist in the picture at the release.
+  const armUp = !shot.handsCut;
+  if (armUp) put('followHold', shot.t.followEnd - shot.t.release, shot.followCapped ? 'medium' : 'high', shot.followCapped ? 'capped' : undefined);
+  if (shot.jump === true) put('jumpHeight', ((G * shot.flight * shot.flight) / 8) * 100, 'medium');
 
   // ---- Joint angles ---------------------------------------------------------------------
   put('kneeBend', shot.dipKnee, legConf);
-  put('setElbow', shot.thetaSet, armConf);
-  put('armExtension', shot.thetaMax, armConf);
+  if (shot.armSeenAtSet) put('setElbow', shot.thetaSet, armConf);
+  if (armUp) put('armExtension', shot.thetaMax, armConf);
 
-  // ---- Heights (valid from any view) ----------------------------------------------------
-  const eyes = track.wristAboveEyes(hand);
-  put('setHeight', sampleAt(eyes, i.set), 'high');
+  // ---- Heights ---------------------------------------------------------------------------
+  // From the side the picture gives heights directly. From other angles the hand is
+  // nearer or farther than the head, so perspective would shift it; the 3D landmarks'
+  // vertical axis is used instead and the reading is labelled an estimate.
+  const EYES = [LM.L_EYE, LM.R_EYE];
   const reachEnd = Math.min(n - 1, Math.round(i.full + 0.25 * fps));
-  const iReach = argMax(eyes, Math.floor(i.release), reachEnd);
-  if (iReach >= 0) put('reachHeight', eyes[iReach], 'high');
+  if (side || !track.hasWorld || !(track.torsoM > 0)) {
+    const eyes = track.wristAboveEyes(hand);
+    const conf = side ? 'high' : 'low';
+    if (shot.armSeenAtSet && track.ok(EYES, i.set)) put('setHeight', sampleAt(eyes, i.set), conf);
+    const iReach = argMax(eyes, Math.floor(i.release), reachEnd);
+    if (armUp && iReach >= 0 && track.ok([S.wrist, ...EYES], iReach)) put('reachHeight', eyes[iReach], conf);
+  } else {
+    const bodyM = track.torsoM / TORSO_TO_HEIGHT;
+    const above = (k) => (((track.wy[LM.L_EYE][k] + track.wy[LM.R_EYE][k]) / 2 - track.wy[S.wrist][k]) / bodyM) * 100;
+    const kSet = clamp(Math.round(i.set), 0, n - 1);
+    if (shot.armSeenAtSet && track.ok(EYES, i.set)) put('setHeight', above(kSet), 'medium');
+    let best = -Infinity;
+    let kBest = -1;
+    for (let k = Math.max(0, Math.floor(i.release)); k <= reachEnd; k++) {
+      const v = above(k);
+      if (v > best) {
+        best = v;
+        kBest = k;
+      }
+    }
+    if (armUp && kBest >= 0 && track.ok([S.wrist, ...EYES], kBest)) put('reachHeight', best, 'medium');
+  }
 
   // ---- Arm angle at full extension ------------------------------------------------------
   const fa = i.full;
   const fb = Math.min(n - 1, i.full + 0.07 * fps);
-  if (side) {
+  if (!armUp) {
+    // wrist out of the picture: no arm angle
+  } else if (side) {
     const dx = windowMedian(track.px[S.wrist], fa, fb) - windowMedian(track.px[S.shoulder], fa, fb);
     const dy = windowMedian(track.py[S.wrist], fa, fb) - windowMedian(track.py[S.shoulder], fa, fb);
     put('armAngle', elevation2(dx, dy, track.view.facing || 1), armConf);
@@ -90,11 +120,15 @@ export function measureShot(track, shot, opts = {}) {
   const sh = track.mid(LM.L_SHOULDER, LM.R_SHOULDER);
   const hip = track.mid(LM.L_HIP, LM.R_HIP);
   const ank = track.mid(LM.L_ANKLE, LM.R_ANKLE);
+  const TRUNK = [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP];
+  const ANKLES = [LM.L_ANKLE, LM.R_ANKLE];
+  const trunkSeen = track.ok(TRUNK, i.release);
+  const landingSeen = shot.jump === true && track.ok(ANKLES, i.takeoff) && track.ok(ANKLES, i.landing);
   if (side) {
     const facing = track.view.facing || 1;
     const lean = tiltFromUp(sampleAt(sh.x, i.release) - sampleAt(hip.x, i.release), sampleAt(sh.y, i.release) - sampleAt(hip.y, i.release));
-    put('trunkLean', lean * facing, 'high');
-    if (shot.jump) {
+    if (trunkSeen) put('trunkLean', lean * facing, 'high');
+    if (landingSeen) {
       const dx = sampleAt(ank.x, i.landing) - sampleAt(ank.x, i.takeoff);
       put('driftForward', ((dx * facing) / track.bodyH) * 100, 'high');
     }
@@ -103,39 +137,94 @@ export function measureShot(track, shot, opts = {}) {
   // ---- Front or back view: everything across the body -------------------------------------
   if (frontal) {
     const out1 = outwardSign(track, hand);
-    // Elbow flare: how far the forearm leans inward on its way up from the elbow at the set point.
     const sa = Math.max(0, i.set - 0.05 * fps);
-    const ex = windowMedian(track.px[S.elbow], sa, i.set);
-    const ey = windowMedian(track.py[S.elbow], sa, i.set);
-    const wx = windowMedian(track.px[S.wrist], sa, i.set);
-    const wy = windowMedian(track.py[S.wrist], sa, i.set);
-    const foreLen = Math.hypot(wx - ex, wy - ey);
-    // With the forearm pointing at the camera its image is too short to give a direction.
-    if (foreLen > 0.12 * track.torso && wy < ey) {
-      put('elbowFlare', -tiltFromUp(wx - ex, wy - ey) * out1, 'medium');
+    const EARS = [LM.L_EAR, LM.R_EAR];
+    const iFinish = Math.min(n - 1, i.full + 0.05 * fps);
+    const aim = track.view.aim;
+    const offAxis = Number.isFinite(track.view.offAxisDeg) ? track.view.offAxisDeg : 0;
+
+    if (track.hasWorld && aim) {
+      // Measure across the SHOOTER, not across the picture. A camera a little to one side
+      // of the shot line would otherwise turn forward reach into sideways offset. `lat`
+      // is the ground-plane direction square to the aim, signed toward the shooting side.
+      let lx = -aim.z;
+      let lz = aim.x;
+      const kS = clamp(Math.round(i.set), 0, n - 1);
+      const across = (track.wx[S.shoulder][kS] - track.wx[Gd.shoulder][kS]) * lx + (track.wz[S.shoulder][kS] - track.wz[Gd.shoulder][kS]) * lz;
+      if (across < 0) {
+        lx = -lx;
+        lz = -lz;
+      }
+      const pt = (j, a0, b0) => [windowMedian(track.wx[j], a0, b0), windowMedian(track.wy[j], a0, b0), windowMedian(track.wz[j], a0, b0)];
+      const mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2];
+      const lat = (p, q) => (p[0] - q[0]) * lx + (p[2] - q[2]) * lz;
+      const rise = (p, q) => -(p[1] - q[1]);
+
+      // Elbow flare: how far the forearm leans inward on its way up from the elbow.
+      const E = pt(S.elbow, sa, i.set);
+      const W = pt(S.wrist, sa, i.set);
+      const fl = lat(W, E);
+      const fv = rise(W, E);
+      const foreLen = Math.hypot(W[0] - E[0], W[1] - E[1], W[2] - E[2]);
+      // A forearm lying nearly level has no meaningful lean in this plane.
+      if (shot.armSeenAtSet && fv > 0.3 * foreLen) put('elbowFlare', toDeg(Math.atan2(-fl, fv)), 'medium');
+
+      // Where the hand sits between the middle of the head (0) and the shooting shoulder (1).
+      const line = (a0, b0) => {
+        const head = mid(pt(LM.L_EAR, a0, b0), pt(LM.R_EAR, a0, b0));
+        const span = lat(pt(S.shoulder, a0, b0), head);
+        return span > 0.04 ? lat(pt(S.wrist, a0, b0), head) / span : NaN;
+      };
+      if (shot.armSeenAtSet && track.ok(EARS, i.set)) put('setLine', line(sa, i.set), 'medium');
+      if (armUp && track.ok([S.wrist, S.shoulder, ...EARS], iFinish)) put('finishLine', line(i.full, iFinish), 'medium');
+
+      if (trunkSeen) {
+        // The trunk moves slowly, so a few frames either side of the release steady the reading.
+        const ra = Math.max(0, i.release - 2);
+        const rb = Math.min(n - 1, i.release + 2);
+        const top = mid(pt(LM.L_SHOULDER, ra, rb), pt(LM.R_SHOULDER, ra, rb));
+        const bottom = mid(pt(LM.L_HIP, ra, rb), pt(LM.R_HIP, ra, rb));
+        put('sideLean', toDeg(Math.atan2(lat(top, bottom), rise(top, bottom))), offAxis <= OFF_AXIS_OK_DEG ? 'high' : 'medium');
+      }
+    } else {
+      // No 3D landmarks or no aim estimate: fall back to offsets in the picture.
+      const ex = windowMedian(track.px[S.elbow], sa, i.set);
+      const ey = windowMedian(track.py[S.elbow], sa, i.set);
+      const wx = windowMedian(track.px[S.wrist], sa, i.set);
+      const wy = windowMedian(track.py[S.wrist], sa, i.set);
+      const foreLen = Math.hypot(wx - ex, wy - ey);
+      if (shot.armSeenAtSet && foreLen > 0.12 * track.torso && wy < ey) {
+        put('elbowFlare', -tiltFromUp(wx - ex, wy - ey) * out1, 'low');
+      }
+      const headX = (at) => (sampleAt(track.px[LM.L_EAR], at) + sampleAt(track.px[LM.R_EAR], at)) / 2;
+      const line = (at) => {
+        const hx = headX(at);
+        const span = sampleAt(track.px[S.shoulder], at) - hx;
+        return Math.abs(span) > 0.05 * track.torso ? (sampleAt(track.px[S.wrist], at) - hx) / span : NaN;
+      };
+      if (shot.armSeenAtSet && track.ok(EARS, i.set)) put('setLine', line(i.set), 'low');
+      if (armUp && track.ok([S.wrist, S.shoulder, ...EARS], iFinish)) put('finishLine', line(iFinish), 'low');
+      const lean = tiltFromUp(sampleAt(sh.x, i.release) - sampleAt(hip.x, i.release), sampleAt(sh.y, i.release) - sampleAt(hip.y, i.release));
+      if (trunkSeen) put('sideLean', lean * out1, 'medium');
     }
-    // Where the hand sits between the middle of the head (0) and the shooting shoulder (1).
-    const headX = (arr, at) => (sampleAt(arr[LM.L_EAR], at) + sampleAt(arr[LM.R_EAR], at)) / 2;
-    const line = (at) => {
-      const hx = headX(track.px, at);
-      const span = sampleAt(track.px[S.shoulder], at) - hx;
-      return Math.abs(span) > 0.05 * track.torso ? (sampleAt(track.px[S.wrist], at) - hx) / span : NaN;
-    };
-    put('setLine', line(i.set), 'medium');
-    put('finishLine', line(Math.min(n - 1, i.full + 0.05 * fps)), 'medium');
-    const lean = tiltFromUp(sampleAt(sh.x, i.release) - sampleAt(hip.x, i.release), sampleAt(sh.y, i.release) - sampleAt(hip.y, i.release));
-    put('sideLean', lean * out1, 'high');
-    if (shot.jump) {
+
+    // Travel in the air can only be read from the picture, where a camera off the shot
+    // line mixes forward travel into it. Past a small angle it is only a rough reading.
+    if (landingSeen) {
       const dx = sampleAt(ank.x, i.landing) - sampleAt(ank.x, i.takeoff);
-      put('driftSide', ((dx * out1) / track.bodyH) * 100, 'high');
+      put('driftSide', ((dx * out1) / track.bodyH) * 100, offAxis <= OFF_AXIS_OK_DEG ? 'high' : 'low');
     }
-    if (Number.isFinite(i.dip)) {
+    if (Number.isFinite(i.dip) && track.ok([LM.L_ANKLE, LM.R_ANKLE, LM.L_KNEE, LM.R_KNEE, LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP], i.dip)) {
       const at = i.dip;
-      const ankles = Math.abs(sampleAt(track.px[LM.L_ANKLE], at) - sampleAt(track.px[LM.R_ANKLE], at));
-      const knees = Math.abs(sampleAt(track.px[LM.L_KNEE], at) - sampleAt(track.px[LM.R_KNEE], at));
-      const shoulders = Math.abs(sampleAt(track.px[LM.L_SHOULDER], at) - sampleAt(track.px[LM.R_SHOULDER], at));
+      const sep = (a0, b0) => Math.abs(sampleAt(track.px[a0], at) - sampleAt(track.px[b0], at));
+      const ankles = sep(LM.L_ANKLE, LM.R_ANKLE);
+      const knees = sep(LM.L_KNEE, LM.R_KNEE);
+      const hips = sep(LM.L_HIP, LM.R_HIP);
+      const shoulders = sep(LM.L_SHOULDER, LM.R_SHOULDER);
       if (shoulders > 0.2 * track.torso) put('stanceWidth', ankles / shoulders, 'medium');
-      if (ankles > 0.15 * track.torso) put('kneeTrack', knees / ankles, 'medium');
+      // Knees that track straight sit on the line from hip to ankle, about halfway along it.
+      const neutral = (hips + ankles) / 2;
+      if (neutral > 0.1 * track.torso) put('kneeTrack', knees / neutral, 'medium');
     }
   }
 
@@ -147,7 +236,8 @@ export function measureShot(track, shot, opts = {}) {
     const riseS = sampleAt(upS, end) - sampleAt(upS, i.set);
     const riseG = sampleAt(upG, end) - sampleAt(upG, i.set);
     const guideVis = (track.vis[Gd.wrist][clamp(Math.round(i.set), 0, n - 1)] + track.vis[Gd.shoulder][clamp(Math.round(i.set), 0, n - 1)]) / 2;
-    if (riseS > 0.25 && guideVis > 0.4) {
+    const guideSeen = track.ok([Gd.wrist, Gd.shoulder], i.set) && track.ok([Gd.wrist, Gd.shoulder], end);
+    if (armUp && shot.armSeenAtSet && guideSeen && riseS > 0.15 && guideVis > 0.4) {
       put('guideFollow', (riseG / riseS) * 100, frontal ? 'medium' : 'low');
     }
   }

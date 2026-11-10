@@ -177,9 +177,13 @@ export function stillFigure({ id, still, shot, aspect, plant, note }) {
   const caption = [STILL_NAMES[id], ...parts, note].filter(Boolean).join(' · ');
   return h(
     'figure',
-    { class: 'still', style: { aspectRatio: `${aspect}` } },
-    still.url ? h('img', { src: still.url, alt: `${STILL_NAMES[id]} frame with the tracked skeleton drawn over it`, loading: 'lazy', decoding: 'async' }) : null,
-    svg,
+    { class: 'still' },
+    h(
+      'div',
+      { class: 'frame', style: { aspectRatio: `${aspect}` } },
+      still.url ? h('img', { src: still.url, alt: `${STILL_NAMES[id]} frame with the tracked skeleton drawn over it`, loading: 'lazy', decoding: 'async' }) : null,
+      svg,
+    ),
     h('figcaption', null, caption),
   );
 }

@@ -115,9 +115,10 @@ test('formatting', () => {
   assert.equal(formatRange('followHold', [0.5, Infinity]), 'at least 0.50 s');
   assert.equal(formatRange('guideFollow', [-Infinity, 35]), 'up to 35%');
   assert.equal(formatSpread('setElbow', 4.24), '±4.2°');
-  assert.equal(timingWords(-42), '40 ms before the top of your jump');
+  assert.equal(timingWords(-42), 'about 40 ms before the top of your jump');
   assert.equal(timingWords(4), 'right at the top of your jump');
-  assert.equal(timingWords(88), '90 ms after the top of your jump');
+  assert.equal(timingWords(88), 'about 90 ms after the top of your jump');
+  assert.equal(timingWords(88, false), 'about 90 ms after the top of your rise');
   assert.equal(lengthFromPct(6, 180), 'about 11 cm (4.3 in)');
   assert.equal(lengthFromPct(6, null), '');
 });
@@ -164,4 +165,14 @@ test('base64 model decoding', () => {
     const wrapped = text.replace(/(.{60})/g, '$1\n');
     assert.deepEqual(Array.from(decodeBase64(new TextEncoder().encode(wrapped))), Array.from(src), `length ${len}`);
   }
+});
+
+test('rough readings are never reported as a fix', () => {
+  const shot = (view, conf) => [{ view, made: null, metrics: { setElbow: { value: 130, conf } } }];
+  assert.equal(assessSession(shot('side', 'high')).metrics.setElbow.status, 'fix');
+  const angled = assessSession(shot('diagonal', 'medium'));
+  assert.equal(angled.metrics.setElbow.status, 'watch', 'an estimate from the wrong angle is a watch');
+  assert.ok(angled.findings.some((f) => f.key === 'setElbow.high' && f.status === 'watch'));
+  const low = assessSession([{ view: 'front', made: null, metrics: { guideFollow: { value: 95, conf: 'low' } } }]);
+  assert.equal(low.metrics.guideFollow.status, 'watch');
 });

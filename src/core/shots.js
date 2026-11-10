@@ -61,6 +61,9 @@ export const DETECT = Object.freeze({
   followDropDeg: 30,
   /** longest follow-through that is measured (seconds); longer holds are reported as "at least" */
   followWindowS: 2.5,
+  /** recording needed before the set point and after full extension for a shot to count (seconds) */
+  minLeadS: 0.25,
+  minTailS: 0.2,
 });
 
 const G = 9.81;
@@ -134,7 +137,7 @@ function buildShot(track, hand, anchor, opts) {
   const hi = Math.min(n - 2, anchor + sec(0.15));
   if (!(lo < hi)) return null;
   const iBurst = argMax(omega, lo, hi);
-  if (iBurst < 0 || !(omega[iBurst] >= DETECT.minExtensionSpeed)) return null;
+  if (iBurst < 0 || !(omega[iBurst] >= (opts.minExtensionSpeed ?? DETECT.minExtensionSpeed))) return null;
   const thr = Math.max(DETECT.onsetFloor, DETECT.onsetFraction * omega[iBurst]);
 
   // 2. End of the burst, and the extended plateau that follows it.
@@ -186,6 +189,17 @@ function buildShot(track, hand, anchor, opts) {
   // The set point is the start of the extension, extrapolated back from `iOpen`.
   const iSet = Math.max(0, iOpen - Math.min(0.12 * fps, openBackoff * (iRel - iOpen)));
 
+  // A shot cut off by the start or the end of the recording is ignored: its set point
+  // or its finish would be read from frames that do not exist.
+  if (iSet < DETECT.minLeadS * fps || n - 1 - iFull < DETECT.minTailS * fps) return null;
+
+  // The shoulder and elbow have to be in view through the push for any of this to mean
+  // anything. The wrist may leave the top of the picture at the release: the shot still
+  // counts, but everything read from the extended arm is withheld (`handsCut`).
+  if (track.okFraction([S.shoulder, S.elbow], iSet - 2, iFull + 2) < 0.7) return null;
+  const handsCut = track.okFraction([S.wrist], iRel, Math.min(n - 1, iFull + sec(0.15))) < 0.7;
+  const armSeenAtSet = track.okFraction([S.shoulder, S.elbow, S.wrist], iSet - 1, iSet + 1) >= 0.6;
+
   // 5. How long the arm waited at the set point before extending: how far back the wrist
   //    (relative to the shoulder) stays within a small radius of where it was at the set
   //    point, with the elbow still near its set-point angle. One stray frame is forgiven.
@@ -205,7 +219,13 @@ function buildShot(track, hand, anchor, opts) {
   const near = track.view.kind === 'side' && track.view.nearSide ? track.view.nearSide : null;
   const knee = near ? track.knee(near) : track.knees();
   const dipLo = Math.max(0, Math.floor(iSet) - sec(0.9));
-  const iDip = argMin(knee, dipLo, Math.floor(iRel));
+  const legPoints = (side) => {
+    const L = sideOf(side);
+    return [L.hip, L.knee, L.ankle];
+  };
+  const kneeLm = near ? legPoints(near) : [...legPoints('left'), ...legPoints('right')];
+  const kneesSeen = track.okFraction(kneeLm, dipLo, iRel) >= 0.7;
+  const iDip = kneesSeen ? argMin(knee, dipLo, Math.floor(iRel)) : -1;
   const dipKnee = iDip >= 0 ? knee[iDip] : NaN;
   const iDipRef = iDip >= 0 ? refineExtremum(knee, iDip) : NaN;
   // A minimum sitting on the first frame of the clip means the dip started before the recording did.
@@ -230,14 +250,18 @@ function buildShot(track, hand, anchor, opts) {
     for (let k = 0; k < footPts.length; k++) m = Math.min(m, bases[k] - track.py[footPts[k]][i]);
     lift[i] = m / track.bodyH;
   }
-  let jump = false;
+  // `jump` is true or false when the feet are in view, and null when they are not (in
+  // which case nothing about the jump is reported rather than guessed).
+  const feetSeen = track.okFraction(footPts, plantA, Math.min(airEnd, Math.ceil(iRel) + sec(0.8))) >= 0.75;
+  let jump = feetSeen ? false : null;
   let iTO = NaN;
   let iLand = NaN;
   let iApex = NaN;
   let flight = NaN;
   let landingByStop = false;
+  let longAir = NaN;
   const toSearchEnd = Math.min(airEnd, Math.ceil(iRel) + sec(0.5));
-  const cross = firstUpCrossing(lift, DETECT.liftThreshold, airStart, toSearchEnd);
+  const cross = feetSeen ? firstUpCrossing(lift, DETECT.liftThreshold, airStart, toSearchEnd) : NaN;
   if (Number.isFinite(cross) && cross > airStart) {
     const iPk = argMax(lift, Math.ceil(cross), Math.min(airEnd, Math.ceil(cross) + sec(1.0)));
     if (iPk >= 0 && lift[iPk] >= DETECT.minJumpLift) {
@@ -263,6 +287,8 @@ function buildShot(track, hand, anchor, opts) {
       }
       if (Number.isFinite(down)) {
         const raw = (down - cross) / fps;
+        // Far too long in the air to be real: almost certainly slow-motion video.
+        if (raw > DETECT.maxFlightS) longAir = raw;
         if (raw >= DETECT.minFlightS && raw <= DETECT.maxFlightS) {
           jump = true;
           iTO = cross;
@@ -284,7 +310,7 @@ function buildShot(track, hand, anchor, opts) {
       }
     }
   }
-  if (!jump) {
+  if (jump === false && track.okFraction([LM.L_HIP, LM.R_HIP], plantMid, iRel) >= 0.7) {
     // No flight: use the top of the body's rise as the reference moment.
     const hip = track.mid(LM.L_HIP, LM.R_HIP).y;
     const a = Math.max(0, plantMid);
@@ -333,10 +359,17 @@ function buildShot(track, hand, anchor, opts) {
     anchor,
     i: idx,
     t,
+    /** true = left the floor, false = feet stayed down, null = feet not in view */
     jump,
+    /** the wrist left the picture around the release, so the extended arm cannot be measured */
+    handsCut,
+    /** shoulder, elbow and wrist were all in view at the set point */
+    armSeenAtSet,
     /** time in the air, seconds (NaN for a set shot) */
     flight,
     landingByStop,
+    /** apparent time in the air when it was too long to be a real jump (seconds), else NaN */
+    longAir,
     followCapped,
     setPause: Math.max(0, (iSet - iArrive) / fps),
     thetaSet,
@@ -355,7 +388,8 @@ function buildShot(track, hand, anchor, opts) {
  * Find every shot taken with `hand` ('left' | 'right') in the track.
  * @param {import('./track.js').Track} track
  * @param {'left'|'right'} hand
- * @param {{ heightM?: number }} [opts]
+ * @param {{ heightM?: number, minExtensionSpeed?: number }} [opts]  minExtensionSpeed lowers the
+ *   bar for what counts as a shooting motion (used only to recognise slow-motion video)
  */
 export function findShots(track, hand, opts = {}) {
   if (!track.n || !(track.torso > 0) || !(track.bodyH > 0)) return [];
@@ -364,13 +398,21 @@ export function findShots(track, hand, opts = {}) {
   const anchors = pickPeaks(up, DETECT.minWristUp, minSep, track.bad);
   const shots = [];
   for (let k = 0; k < anchors.length; k++) {
-    // A shot's follow-through cannot run into the next shot's wrist peak.
-    const until = k + 1 < anchors.length ? anchors[k + 1] - Math.round(0.5 * track.fps) : track.n - 1;
-    const shot = buildShot(track, hand, anchors[k], { ...opts, until });
+    const shot = buildShot(track, hand, anchors[k], opts);
     if (!shot) continue;
     const prev = shots[shots.length - 1];
     if (prev && Math.abs(prev.i.release - shot.i.release) < minSep) continue;
     shots.push(shot);
+  }
+  // A follow-through cannot run into the next shot. (Limiting it by the next real shot,
+  // not by the next wrist peak, keeps a long hold from being cut short by itself.)
+  for (let k = 0; k + 1 < shots.length; k++) {
+    const limit = shots[k + 1].i.setArrive - 0.3 * track.fps;
+    if (shots[k].i.followEnd > limit) {
+      shots[k].i.followEnd = Math.max(shots[k].i.full, limit);
+      shots[k].t.followEnd = track.timeAt(shots[k].i.followEnd);
+      shots[k].followCapped = true;
+    }
   }
   shots.forEach((s, i) => {
     s.index = i;
@@ -397,7 +439,7 @@ export function guessHand(track, opts = {}) {
   if (right.length && left.length) hand = hr >= hl ? 'right' : 'left';
   else hand = left.length > right.length ? 'left' : 'right';
   const confident = right.length === 0 || left.length === 0 || Math.abs(hr - hl) > 2;
-  return { hand, shots: hand === 'right' ? right : left, confident };
+  return { hand, shots: hand === 'right' ? right : left, confident, right, left };
 }
 
 export { otherSide };

@@ -22,8 +22,8 @@ export const SOURCES = Object.freeze({
   sideOnly: [['side']],
   /** across the body: front and back views are pooled */
   frontal: [['front', 'back']],
-  /** heights: least distorted from the side */
-  height: [['side'], ['diagonal'], ['front', 'back']],
+  /** heights: read directly from the side; elsewhere each angle stands alone (never pooled) */
+  height: [['side'], ['diagonal'], ['front'], ['back']],
   /** timing does not depend on the camera angle, so every shot counts */
   any: [['side', 'diagonal', 'front', 'back']],
 });
@@ -69,8 +69,8 @@ export const METRICS = Object.freeze([
   },
   {
     id: 'kneeTrack', label: 'Knee tracking', category: 'base', unit: 'x', source: 'frontal',
-    ideal: [0.85, 1.3], ok: [0.7, 1.45], weight: 0.4, tight: 0.08, loose: 0.18, consistencyWeight: 0.2, digits: 2,
-    what: 'Distance between your knees as a multiple of the distance between your ankles, at the dip. Under 1 means the knees are inside the feet.',
+    ideal: [0.85, 1.3], ok: [0.72, 1.45], weight: 0.4, tight: 0.08, loose: 0.18, consistencyWeight: 0.2, digits: 2,
+    what: 'How far apart your knees are at the dip, compared with where they would be on a straight line from hip to ankle. 1 is on that line; under 1 means the knees have fallen inside it.',
   },
   // ---- Set point -----------------------------------------------------------------------
   {

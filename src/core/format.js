@@ -78,7 +78,7 @@ export function timingWords(ms, jump = true) {
   const top = jump ? 'the top of your jump' : 'the top of your rise';
   const r = Math.round(Math.abs(ms) / 10) * 10;
   if (r < 15) return `right at ${top}`;
-  return ms < 0 ? `${r} ms before ${top}` : `${r} ms after ${top}`;
+  return ms < 0 ? `about ${r} ms before ${top}` : `about ${r} ms after ${top}`;
 }
 
 export function plural(n, word, pluralWord) {

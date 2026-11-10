@@ -12,6 +12,12 @@ export const POSITION_CUTOFF_HZ = 10;
 export const MAX_GAP_S = 0.3;
 /** Nose-to-ankle distance as a fraction of standing height (nose about 92.5%, ankle joint about 4%). */
 export const NOSE_TO_ANKLE = 0.885;
+/** Mid-shoulder to mid-hip distance as a fraction of standing height. */
+export const TORSO_TO_HEIGHT = 0.288;
+/** A landmark the tracker scores below this visibility is treated as not seen. */
+export const MIN_VISIBILITY = 0.2;
+/** A landmark further outside the picture than this fraction of its size is treated as not seen. */
+export const FRAME_MARGIN = 0.03;
 
 /** View thresholds on (2D shoulder width / torso length). A square-on body is about 0.7. */
 export const VIEW_SIDE_BELOW = 0.42;
@@ -61,41 +67,88 @@ export class Track {
     this.detectedFraction = nRaw ? detected / nRaw : 0;
     this.hasWorld = hasWorld;
 
-    /** frames where the pose had to be bridged across a gap longer than MAX_GAP_S */
+    /** frames where the whole pose had to be bridged across a gap longer than MAX_GAP_S */
     this.bad = new Uint8Array(n);
+    {
+      const { bad } = fillGaps(new Float64Array(nRaw), has, maxGap);
+      const uni = uniform ? bad : resample(times, Float64Array.from(bad), this.t0, this.dt, n);
+      for (let i = 0; i < n; i++) if (uni[i] > 0.5) this.bad[i] = 1;
+    }
     this.px = new Array(N_LANDMARKS);
     this.py = new Array(N_LANDMARKS);
     this.wx = hasWorld ? new Array(N_LANDMARKS) : null;
     this.wy = hasWorld ? new Array(N_LANDMARKS) : null;
     this.wz = hasWorld ? new Array(N_LANDMARKS) : null;
     this.vis = new Array(N_LANDMARKS);
+    /**
+     * Per landmark, 1 where its position can be trusted for a measurement: the tracker
+     * reported it as visible and it is inside the picture. The tracker always outputs
+     * all 33 points, guessing the ones it cannot see, so a point that is out of frame or
+     * hidden must be treated as missing, not measured.
+     */
+    this.seen = new Array(N_LANDMARKS);
 
     const tmp = new Float64Array(nRaw);
-    const condition = (pick, markBad) => {
+    const valid = new Uint8Array(nRaw);
+    const outside = new Float64Array(nRaw);
+    const condition = (pick) => {
       for (let i = 0; i < nRaw; i++) tmp[i] = has[i] ? pick(frames[i]) : NaN;
-      const { out, bad } = fillGaps(tmp, has, maxGap);
-      const uni = uniform ? out : resample(times, out, this.t0, this.dt, n);
-      if (markBad) {
-        const badUni = uniform ? bad : resample(times, Float64Array.from(bad), this.t0, this.dt, n);
-        for (let i = 0; i < n; i++) if (badUni[i] > 0.5) this.bad[i] = 1;
-      }
-      return lowpass(uni, cutoff, this.fps);
+      const { out, bad } = fillGaps(tmp, valid, maxGap);
+      return { series: lowpass(uniform ? out : resample(times, out, this.t0, this.dt, n), cutoff, this.fps), bad };
     };
     for (let j = 0; j < N_LANDMARKS; j++) {
-      this.px[j] = condition((f) => f.lm[j].x * this.W, j === 0);
-      this.py[j] = condition((f) => f.lm[j].y * this.H, false);
-      if (hasWorld) {
-        this.wx[j] = condition((f) => f.world[j].x, false);
-        this.wy[j] = condition((f) => f.world[j].y, false);
-        this.wz[j] = condition((f) => f.world[j].z, false);
+      // Two levels of trust. A point the tracker scores as visible is used to follow the
+      // motion even when it has just left the picture (the tracker extrapolates a
+      // partly visible limb sensibly). It only counts as SEEN, and so fit to report a
+      // measurement from, when it is also inside the picture.
+      for (let i = 0; i < nRaw; i++) {
+        const p = has[i] ? frames[i].lm[j] : null;
+        valid[i] = p && (p.visibility ?? 1) >= MIN_VISIBILITY ? 1 : 0;
+        outside[i] = p && p.x >= -FRAME_MARGIN && p.x <= 1 + FRAME_MARGIN && p.y >= -FRAME_MARGIN && p.y <= 1 + FRAME_MARGIN ? 0 : 1;
       }
+      const x = condition((f) => f.lm[j].x * this.W);
+      this.px[j] = x.series;
+      this.py[j] = condition((f) => f.lm[j].y * this.H).series;
+      if (hasWorld) {
+        this.wx[j] = condition((f) => f.world[j].x).series;
+        this.wy[j] = condition((f) => f.world[j].y).series;
+        this.wz[j] = condition((f) => f.world[j].z).series;
+      }
+      // Bridged samples keep the signals continuous, but only samples the tracker
+      // actually saw, inside the picture, count as seen.
+      for (let i = 0; i < nRaw; i++) outside[i] = valid[i] && !outside[i] ? 0 : 1;
+      const outUni = uniform ? outside : resample(times, outside, this.t0, this.dt, n);
+      const seen = new Uint8Array(n);
+      for (let i = 0; i < n; i++) seen[i] = outUni[i] > 0.5 ? 0 : 1;
+      this.seen[j] = seen;
       for (let i = 0; i < nRaw; i++) tmp[i] = has[i] ? (frames[i].lm[j].visibility ?? 1) : 0;
-      const v = uniform ? Float64Array.from(tmp) : resample(times, tmp, this.t0, this.dt, n);
-      this.vis[j] = v;
+      this.vis[j] = uniform ? Float64Array.from(tmp) : resample(times, tmp, this.t0, this.dt, n);
     }
 
     this.#measureScale();
     this.view = this.#classifyView();
+  }
+
+  /** True when every listed landmark can be trusted at (fractional) frame index i. */
+  ok(landmarks, i) {
+    const k = Math.min(this.n - 1, Math.max(0, Math.round(i)));
+    if (!Number.isFinite(i)) return false;
+    for (const j of landmarks) if (!this.seen[j][k]) return false;
+    return true;
+  }
+
+  /** Fraction of frames in [a, b] where every listed landmark can be trusted. */
+  okFraction(landmarks, a, b) {
+    const lo = Math.max(0, Math.floor(Math.min(a, b)));
+    const hi = Math.min(this.n - 1, Math.ceil(Math.max(a, b)));
+    if (!(hi >= lo)) return 0;
+    let good = 0;
+    for (let i = lo; i <= hi; i++) {
+      let all = 1;
+      for (const j of landmarks) if (!this.seen[j][i]) all = 0;
+      good += all;
+    }
+    return good / (hi - lo + 1);
   }
 
   // ---- Scale ----------------------------------------------------------------------
@@ -105,27 +158,40 @@ export class Track {
     const torso = [];
     const stand = [];
     const sw = [];
+    const SH = [LM.L_SHOULDER, LM.R_SHOULDER];
+    const HIPS = [LM.L_HIP, LM.R_HIP];
+    const ANKLES = [LM.L_ANKLE, LM.R_ANKLE];
     for (let i = 0; i < n; i++) {
-      if (this.bad[i]) continue;
+      if (this.bad[i] || !this.ok(SH, i)) continue;
+      sw.push(Math.abs(this.px[LM.L_SHOULDER][i] - this.px[LM.R_SHOULDER][i]));
+      if (!this.ok(HIPS, i)) continue;
       const sx = (this.px[LM.L_SHOULDER][i] + this.px[LM.R_SHOULDER][i]) / 2;
       const sy = (this.py[LM.L_SHOULDER][i] + this.py[LM.R_SHOULDER][i]) / 2;
       const hx = (this.px[LM.L_HIP][i] + this.px[LM.R_HIP][i]) / 2;
       const hy = (this.py[LM.L_HIP][i] + this.py[LM.R_HIP][i]) / 2;
       torso.push(Math.hypot(sx - hx, sy - hy));
+      if (!this.ok(ANKLES, i) || !this.ok([LM.NOSE], i)) continue;
       const ay = (this.py[LM.L_ANKLE][i] + this.py[LM.R_ANKLE][i]) / 2;
       stand.push(ay - this.py[LM.NOSE][i]);
-      sw.push(Math.abs(this.px[LM.L_SHOULDER][i] - this.px[LM.R_SHOULDER][i]));
     }
+    const usable = Math.max(1, n - this.bad.reduce((a, b) => a + b, 0));
+    /** fraction of the clip in which both hips are in view */
+    this.hipsSeen = torso.length / usable;
+    /** fraction of the clip in which both ankles are in view */
+    this.feetSeen = stand.length / usable;
     /** torso length in pixels (mid-shoulder to mid-hip) */
     this.torso = torso.length ? median(torso) : NaN;
-    /** standing body height in pixels */
-    this.bodyH = stand.length ? quantile(stand, 0.9) / NOSE_TO_ANKLE : NaN;
+    /**
+     * Standing body height in pixels. Measured nose to ankle when the feet are in view;
+     * otherwise estimated from the torso, which is about 29% of standing height.
+     */
+    this.bodyH = stand.length >= Math.max(3, 0.2 * usable) ? quantile(stand, 0.9) / NOSE_TO_ANKLE : this.torso / TORSO_TO_HEIGHT;
     /** apparent shoulder width in pixels (small in a side view) */
     this.shoulderW = sw.length ? median(sw) : NaN;
     if (this.hasWorld) {
       const sw3 = [];
       for (let i = 0; i < n; i += 2) {
-        if (this.bad[i]) continue;
+        if (this.bad[i] || !this.ok(SH, i)) continue;
         sw3.push(Math.hypot(
           this.wx[LM.L_SHOULDER][i] - this.wx[LM.R_SHOULDER][i],
           this.wy[LM.L_SHOULDER][i] - this.wy[LM.R_SHOULDER][i],
@@ -134,8 +200,21 @@ export class Track {
       }
       /** true shoulder width in metres, from the 3D landmarks */
       this.shoulderWm = sw3.length ? median(sw3) : NaN;
+      const t3 = [];
+      for (let i = 0; i < n; i += 2) {
+        if (this.bad[i] || !this.ok([...SH, ...HIPS], i)) continue;
+        const mid = (arr, a, b) => (arr[a][i] + arr[b][i]) / 2;
+        t3.push(Math.hypot(
+          mid(this.wx, LM.L_SHOULDER, LM.R_SHOULDER) - mid(this.wx, LM.L_HIP, LM.R_HIP),
+          mid(this.wy, LM.L_SHOULDER, LM.R_SHOULDER) - mid(this.wy, LM.L_HIP, LM.R_HIP),
+          mid(this.wz, LM.L_SHOULDER, LM.R_SHOULDER) - mid(this.wz, LM.L_HIP, LM.R_HIP),
+        ));
+      }
+      /** torso length in the 3D landmarks' own units, for scaling 3D heights */
+      this.torsoM = t3.length ? median(t3) : NaN;
     } else {
       this.shoulderWm = NaN;
+      this.torsoM = NaN;
     }
   }
 
@@ -145,10 +224,11 @@ export class Track {
     const n = this.n;
     const order = [];
     const face = [];
+    const FEET = [LM.L_TOE, LM.L_HEEL, LM.R_TOE, LM.R_HEEL];
     for (let i = 0; i < n; i++) {
-      if (this.bad[i]) continue;
+      if (this.bad[i] || !this.ok([LM.L_SHOULDER, LM.R_SHOULDER], i)) continue;
       order.push(this.px[LM.L_SHOULDER][i] - this.px[LM.R_SHOULDER][i]);
-      const toes = (this.px[LM.L_TOE][i] - this.px[LM.L_HEEL][i]) + (this.px[LM.R_TOE][i] - this.px[LM.R_HEEL][i]);
+      const toes = this.ok(FEET, i) ? (this.px[LM.L_TOE][i] - this.px[LM.L_HEEL][i]) + (this.px[LM.R_TOE][i] - this.px[LM.R_HEEL][i]) : 0;
       const nose = this.px[LM.NOSE][i] - (this.px[LM.L_EAR][i] + this.px[LM.R_EAR][i]) / 2;
       face.push(toes + 2 * nose);
     }

@@ -199,7 +199,7 @@ export const LIBRARY = {
   // ---- Release -------------------------------------------------------------------------
   'armExtension.low': {
     title: 'Short-armed release',
-    saw: (c) => `Your shooting elbow only straightens to ${c.v}. A full release finishes at ${c.range}.`,
+    saw: (c) => `Your shooting elbow only straightens to ${c.v}. A full release reaches ${c.floor} or more.`,
     cost: 'When the elbow stops short, the ball leaves from a different point each time and gets less lift. Shots come out flatter and distance control suffers.',
     cue: 'Reach the high shelf',
     check: 'Elbow finishes above your eyebrow.',
@@ -243,7 +243,7 @@ export const LIBRARY = {
   },
   'releaseVsApex.high': {
     title: 'Releasing on the way down',
-    saw: (c) => `The ball leaves about ${c.timing}.`,
+    saw: (c) => `The ball leaves ${c.timing}.`,
     cost: 'Once you are coming down, the lift from your legs is gone and the arm has to supply all the power. From distance that shows up as short, flat shots. Close to the basket a release at the top is normal.',
     cue: 'Shoot on the way up',
     check: 'Ball gone before the peak.',
@@ -254,7 +254,7 @@ export const LIBRARY = {
   },
   'releaseVsApex.low': {
     title: 'Releasing very early in the jump',
-    saw: (c) => `The ball leaves about ${c.timing}.`,
+    saw: (c) => `The ball leaves ${c.timing}.`,
     cost: 'Releasing well before the top is a common way to get range, and it is quick. It gives up release height, so the shot is easier to contest close to a defender.',
     cue: 'Ride the jump up',
     check: 'Ball leaves near the top on mid-range shots.',
@@ -278,7 +278,7 @@ export const LIBRARY = {
   // ---- Follow-through ---------------------------------------------------------------------
   'followHold.low': {
     title: 'Follow-through dropped early',
-    saw: (c) => `Your arm stays extended for ${c.v} after the release. Shooters who finish their shots hold it for ${c.range}.`,
+    saw: (c) => `Your arm stays extended for ${c.v} after the release. Shooters who finish their shots hold it for ${c.floor} or more.`,
     cost: 'Pulling the arm down early usually means the release itself was cut short or hurried. Holding the finish makes the last part of the shot repeatable.',
     cue: 'Hold until it lands',
     check: 'Arm up, wrist relaxed.',
@@ -499,11 +499,12 @@ export function explain(finding, assessment, ctx = {}) {
     c.vAbs = formatValue(spec.id, Math.abs(m.mean));
     c.range = formatRange(spec.id, m.ideal);
     c.limit = formatValue(spec.id, m.ideal[1]);
+    c.floor = formatValue(spec.id, m.ideal[0]);
     c.viewWord = m.views.includes('front') ? 'front' : m.views.includes('back') ? 'back' : 'camera';
     c.len = spec.unit === 'pct' ? lengthFromPct(m.mean, c.heightCm) : '';
     c.below = `${formatValue(spec.id, Math.abs(m.mean))} of your height ${m.mean < 0 ? 'below' : 'above'}`;
     c.above = `${formatValue(spec.id, Math.abs(m.mean))} of your height above`;
-    c.timing = timingWords(m.mean, true);
+    c.timing = timingWords(m.mean, assessment.jumpShots !== false);
     c.lineWords = lineWords(m.mean);
     stillView = m.views[0];
   } else {
@@ -559,7 +560,8 @@ export function styleNotes(assessment, ctx = {}) {
     out.push({ id: 'setHeight', label: 'Set point', text: `You start the push with your wrist ${where}.` });
   }
   if (m.releaseVsApex) {
-    out.push({ id: 'timing', label: 'Release timing', text: `The ball leaves ${timingWords(m.releaseVsApex.mean, true)}. Shooters release earlier from long range and later close in.` });
+    const jump = !m.releaseVsApex.noJump;
+    out.push({ id: 'timing', label: 'Release timing', text: `The ball leaves ${timingWords(m.releaseVsApex.mean, jump)}.${jump ? ' Shooters release earlier from long range and later close in.' : ' Your feet stay on the floor, so this is a set shot.'}` });
   }
   if (m.tempo) {
     out.push({ id: 'tempo', label: 'Tempo', text: `${formatValue('tempo', m.tempo.mean)} from the bottom of the dip to the release.` });

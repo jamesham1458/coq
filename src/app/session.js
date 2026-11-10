@@ -38,11 +38,14 @@ export function buildSession({ id, profile, mode, distance, clips }) {
     mode,
     createdAt: Date.now(),
     distance: distance || 'mid',
-    hand: profile.hand,
+    // The hand that was actually analysed, which can differ from the profile when the
+    // other arm was clearly the one shooting.
+    hand: (clips.find((c) => c.shots.some((x) => x.included)) || {}).hand || profile.hand,
     heightCm: profile.heightCm || null,
     shots,
     clips: clips.map((c) => ({
       view: c.view.kind,
+      hand: c.hand || null,
       declared: c.view.declared || null,
       shots: c.shots.length,
       used: c.shots.filter((s) => s.included).length,

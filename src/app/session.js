@@ -48,6 +48,8 @@ export function buildSession({ id, profile, mode, distance, clips }) {
       used: c.shots.filter((s) => s.included).length,
       fps: Math.round(c.info.fps),
       nativeFps: Number.isFinite(c.info.nativeFps) ? Math.round(c.info.nativeFps) : null,
+      reader: c.info.reader || null,
+      backend: c.info.delegate || null,
       warnings: c.warnings.map((w) => w.code),
     })),
     app: APP_VERSION,

@@ -1469,6 +1469,16 @@ table.data td:first-child {
   max-width: 65ch;
 }
 
+.copybox {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-family: var(--font-data);
+  font-size: var(--t-xs);
+}
+
 .foot {
   padding-block: 20px 28px;
   border-top: 1px solid var(--line);

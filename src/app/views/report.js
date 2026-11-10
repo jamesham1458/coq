@@ -488,6 +488,35 @@ export function reportView(app) {
     ),
   );
 
+  const tech = session.clips
+    .filter((c) => c.reader)
+    .map((c) => `${VIEW_NAMES[c.view] || c.view} clip: ${c.fps} samples a second${c.nativeFps && c.nativeFps !== c.fps ? ` from ${c.nativeFps} fps video` : ''}, ${c.reader === 'decode' ? 'decoded directly' : 'stepped by seeking'}, ${c.backend || 'unknown'} backend`);
+  const copyState = h('span', { class: 'small muted', role: 'status' });
+  const copyBox = h('textarea', { class: 'copybox', readonly: true, rows: 4, hidden: true, 'aria-label': 'Report data' });
+  const copyData = async () => {
+    const text = JSON.stringify({ session, scores: a.scores, findings: findings.map((f) => f.key) });
+    try {
+      await navigator.clipboard.writeText(text);
+      copyState.textContent = 'Copied.';
+    } catch {
+      // Some app views refuse clipboard writes: show the text so it can be copied by hand.
+      copyBox.hidden = false;
+      copyBox.value = text;
+      copyBox.focus();
+      copyBox.select();
+      copyState.textContent = 'Select all and copy.';
+    }
+  };
+  const techLine = h(
+    'div',
+    { class: 'stack', style: { gap: '6px' } },
+    tech.length ? h('p', { class: 'small muted' }, `Technical details. ${tech.join('. ')}.`) : null,
+    !example
+      ? h('div', { class: 'row' }, h('button', { class: 'btn quiet', type: 'button', onClick: copyData }, 'Copy the report data'), copyState)
+      : null,
+    copyBox,
+  );
+
   const saved = h(
     'div',
     { class: 'row between' },
@@ -518,6 +547,7 @@ export function reportView(app) {
     clips ? framesBrowser(clips) : null,
     !example ? coachSection(app, session, report, clips) : null,
     notes,
+    techLine,
     saved,
   );
 }

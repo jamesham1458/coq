@@ -43,6 +43,8 @@ await step('assessment screen with clips', async () => {
   await page.locator('.shotcard').nth(1).getByRole('button', { name: 'Skip' }).click();
   await page.locator('.shotcard').nth(2).getByRole('button', { name: 'Miss' }).click();
   if (!(await page.getByRole('button', { name: /Build the report from 15 shots/ }).count())) throw new Error('skip did not reduce the count');
+  const wide = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  if (wide > 0) throw new Error(`the page scrolls sideways by ${wide}px with clips loaded`);
   await page.locator('.seg label', { hasText: 'Three' }).click();
 });
 await step('build report (session 1)', async () => {
@@ -60,6 +62,8 @@ await step('open findings and frames', async () => {
   await page.locator('details.more summary', { hasText: 'Shot-by-shot numbers' }).click();
   const rows = await page.locator('table.data tbody tr').count();
   if (rows !== 15) throw new Error(`shot table has ${rows} rows`);
+  const wide = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  if (wide > 0) throw new Error(`the report scrolls sideways by ${wide}px`);
   await page.getByRole('button', { name: 'front 3' }).click();
   await page.locator('.metrics .gauge .hit').first().dispatchEvent('pointerenter');
   const tip = await page.locator('.tip').innerText();
@@ -79,6 +83,8 @@ await step('second session and progress', async () => {
   const txt = await page.locator('main').innerText();
   if (!/since last time/i.test(txt)) throw new Error('no comparison section');
   if (/undefined|NaN/.test(txt)) throw new Error('progress text contains undefined/NaN');
+  const wide = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  if (wide > 0) throw new Error(`the progress screen scrolls sideways by ${wide}px`);
 });
 await step('reload keeps history (local storage)', async () => {
   await page.reload({ waitUntil: 'networkidle' });

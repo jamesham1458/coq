@@ -194,6 +194,13 @@ textarea {
   border-radius: 4px;
 }
 
+/* Flex and grid children default to min-width:auto, which lets a wide child (a strip of
+   thumbnails, a table) push the whole page sideways. Zero specificity, so any explicit
+   min-width still wins. */
+.wrap :where(*) {
+  min-width: 0;
+}
+
 .wrap {
   width: 100%;
   max-width: 1040px;
@@ -483,6 +490,8 @@ select {
 
 .seg {
   display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
   padding: 2px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-sm);
@@ -819,6 +828,7 @@ select {
 .shotstrip {
   display: flex;
   gap: 8px;
+  max-width: 100%;
   overflow-x: auto;
   padding-bottom: 6px;
   scrollbar-width: thin;

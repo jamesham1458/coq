@@ -12,6 +12,7 @@ import { reportView } from './app/views/report.js';
 import { progressView } from './app/views/progress.js';
 import { profilesView } from './app/views/profiles.js';
 import { guideView } from './app/views/guide.js';
+import { exampleReport } from './app/session.js';
 
 const ROUTES = {
   home: homeView,
@@ -177,7 +178,7 @@ function start(restored) {
   store.connect();
 
   // Handles for automated browser checks.
-  window.shotLab = { app, openClip, processClip };
+  window.shotLab = { app, openClip, processClip, exampleReport };
 }
 
 // Keep the viewer's place when the page is republished while open.

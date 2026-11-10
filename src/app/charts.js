@@ -134,10 +134,11 @@ export function gauge(spec, m, opts = {}) {
     });
   }
   const mx = sx(m.mean);
-  svg.appendChild(s('path', { d: `M${mx} ${trackY - 5}V${trackY + trackH + 5}`, stroke: 'var(--ink)', 'stroke-width': 2, 'stroke-linecap': 'round' }));
-  svg.appendChild(s('path', { d: `M${mx - 4} ${trackY - 9}h8l-4 5z`, fill: 'var(--ink)' }));
+  svg.appendChild(s('path', { d: `M${mx} ${trackY - 5}V${trackY + trackH + 5}`, stroke: 'var(--ink)', 'stroke-width': 2, 'stroke-linecap': 'round', 'pointer-events': 'none' }));
+  svg.appendChild(s('path', { d: `M${mx - 4} ${trackY - 9}h8l-4 5z`, fill: 'var(--ink)', 'pointer-events': 'none' }));
   svg.appendChild(s('text', {
     class: 'mean-label',
+    'pointer-events': 'none',
     x: Math.min(Math.max(mx, x0 + 18), x1 - 18),
     y: 9,
     'text-anchor': 'middle',
@@ -148,7 +149,8 @@ export function gauge(spec, m, opts = {}) {
 /**
  * Trend line across sessions for one measurement or score.
  * @param {{ label: string, value: number, note?: string }[]} points  oldest first
- * @param {{ format: (v:number)=>string, ideal?: [number, number], title: string }} opts
+ * @param {{ format: (v:number)=>string, ideal?: [number, number], title: string, minSpan?: number }} opts
+ *   minSpan is the smallest vertical range the chart may show, so noise is not drawn as a trend
  */
 export function trend(points, opts) {
   const W = 300;
@@ -166,9 +168,11 @@ export function trend(points, opts) {
     lo = 0;
     hi = 1;
   }
-  if (hi - lo < 1e-9) {
-    lo -= 1;
-    hi += 1;
+  const minSpan = opts.minSpan > 0 ? opts.minSpan : 2;
+  if (hi - lo < minSpan) {
+    const mid = (hi + lo) / 2;
+    lo = mid - minSpan / 2;
+    hi = mid + minSpan / 2;
   }
   const pad = (hi - lo) * 0.12;
   lo -= pad;

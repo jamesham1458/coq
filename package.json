@@ -9,7 +9,7 @@
     "fetch-model": "node scripts/fetch-model.mjs",
     "build": "node scripts/build.mjs --minify",
     "serve": "node scripts/serve.mjs --root build/site",
-    "test:browser": "node scripts/build.mjs && node test/e2e/readers.mjs"
+    "test:browser": "node scripts/build.mjs && node test/e2e/readers.mjs && node test/e2e/screens.mjs"
   },
   "devDependencies": {
     "@mediapipe/tasks-vision": "1.2.0",

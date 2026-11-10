@@ -9,15 +9,28 @@ function shortDate(ms) {
   return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
+/** Chart labels for a run of sessions: the date, plus the time where two share a date. */
+function sessionLabels(sessions) {
+  const dates = sessions.map((x) => shortDate(x.createdAt));
+  return sessions.map((x, i) => {
+    const shared = dates.filter((d) => d === dates[i]).length > 1;
+    return shared ? `${dates[i]}, ${new Date(x.createdAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : dates[i];
+  });
+}
+
 function trendCard(title, points, opts) {
   const last = points[points.length - 1];
   const first = points[0];
   const delta = last.value - first.value;
+  const size = opts.formatDelta(Math.abs(delta));
+  // A change that rounds to nothing is reported as no change, not as "+0".
+  const moved = /[1-9]/.test(size);
+  const change = moved ? `${delta > 0 ? '+' : '−'}${size} since ${first.label}` : `No change since ${first.label}`;
   return h(
     'section',
     { class: 'trend-card' },
-    h('div', { class: 'row between' }, h('h3', null, title), h('span', { class: 'small muted num' }, `${delta > 0 ? '+' : delta < 0 ? '−' : ''}${opts.formatDelta(Math.abs(delta))} since ${first.label}`)),
-    trend(points, { title, format: opts.format, ideal: opts.ideal }),
+    h('div', { class: 'row between' }, h('h3', null, title), h('span', { class: 'small muted' }, change)),
+    trend(points, { title, format: opts.format, ideal: opts.ideal, minSpan: opts.minSpan }),
   );
 }
 
@@ -43,9 +56,10 @@ export function progressView(app) {
   const fulls = all.filter((x) => x.mode === 'full');
   const onlyFull = fulls.length >= 2;
   const series = (onlyFull ? fulls : all).slice().reverse();
-  const reports = series.map((session) => ({ session, report: reportFor(session) }));
-  const point = (r, value) => ({ label: shortDate(r.session.createdAt), value, note: `${r.session.mode === 'full' ? 'full' : 'quick'}, ${plural(r.session.shots.length, 'shot')}` });
-  const scoreFmt = { format: (v) => formatScore(v), formatDelta: (v) => String(Math.round(v)) };
+  const labels = sessionLabels(series);
+  const reports = series.map((session, i) => ({ session, label: labels[i], report: reportFor(session) }));
+  const point = (r, value) => ({ label: r.label, value, note: `${r.session.mode === 'full' ? 'full' : 'quick'}, ${plural(r.session.shots.length, 'shot')}` });
+  const scoreFmt = { format: (v) => formatScore(v), formatDelta: (v) => String(Math.round(v)), minSpan: 20 };
 
   const cards = [];
   if (reports.length >= 2) {
@@ -64,6 +78,8 @@ export function progressView(app) {
           format: (v) => formatValue(spec.id, v),
           formatDelta: (v) => formatValue(spec.id, v),
           ideal: latest.ideal || undefined,
+          // Anything smaller than the metric's own shot-to-shot looseness is noise, not a trend.
+          minSpan: (spec.loose || 1) * 2,
         }),
       );
     }
@@ -77,7 +93,7 @@ export function progressView(app) {
     changes = h(
       'section',
       { class: 'stack' },
-      h('div', { class: 'section-head' }, h('h2', null, 'Since last time'), h('span', { class: 'small muted' }, `${shortDate(before.session.createdAt)} to ${shortDate(after.session.createdAt)}`)),
+      h('div', { class: 'section-head' }, h('h2', null, 'Since last time'), h('span', { class: 'small muted' }, `${before.label} to ${after.label}`)),
       rows.length
         ? h(
             'div',

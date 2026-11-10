@@ -27,7 +27,7 @@ async function holdScreenAwake() {
  * @param {number} [opts.heightM]
  * @param {HTMLCanvasElement} opts.canvas   canvas each analysed frame is drawn to (may be on screen)
  * @param {(stage: string, fraction?: number) => void} [opts.onStage]
- * @param {(canvas: HTMLCanvasElement, lm: object[]|null) => void} [opts.onFrame]
+ * @param {(canvas: HTMLCanvasElement, lm: object[]|null, world: object[]|null) => void} [opts.onFrame]
  * @param {AbortSignal} [opts.signal]
  * @param {object} [opts.engineOptions]
  * @param {'decode'|'seek'} [opts.reader]   force one video reader (tests)
@@ -66,7 +66,7 @@ async function run(file, opts, opening) {
               throw Object.assign(new Error(`The pose engine failed on a frame: ${(e && e.message) || e}`), { name: 'EngineError', stage: 'detect' });
             }
             frames.push({ t, lm: r.lm, world: r.world });
-            opts.onFrame?.(cv, r.lm);
+            opts.onFrame?.(cv, r.lm, r.world);
             stage('reading', fraction);
           },
         });

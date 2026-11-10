@@ -8,7 +8,8 @@ import { PoseLandmarker } from '@mediapipe/tasks-vision';
 export const ENGINE_FILES = Object.freeze({
   loader: 'engine/vision_wasm_internal.js',
   wasm: 'engine/vision_wasm_internal.wasm',
-  model: 'engine/pose_landmarker_full.task',
+  /** the pose model as base64 text (see scripts/build.mjs) */
+  model: 'engine/pose_landmarker_full.txt',
 });
 
 export class EngineError extends Error {
@@ -58,6 +59,29 @@ async function fetchWithProgress(url, onProgress) {
   }
   onProgress?.(1);
   return out;
+}
+
+const B64 = new Int16Array(128).fill(-1);
+for (let i = 0; i < 64; i++) B64['ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.charCodeAt(i)] = i;
+
+/** Decode base64 held as ASCII bytes, without building a string. Whitespace and padding are skipped. */
+export function decodeBase64(ascii) {
+  const out = new Uint8Array(Math.floor((ascii.length * 3) / 4));
+  let acc = 0;
+  let bits = 0;
+  let n = 0;
+  for (let i = 0; i < ascii.length; i++) {
+    const c = ascii[i];
+    const v = c < 128 ? B64[c] : -1;
+    if (v < 0) continue;
+    acc = (acc << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out[n++] = (acc >> bits) & 255;
+    }
+  }
+  return out.subarray(0, n);
 }
 
 /** Quick check that this browser can compile WebAssembly at all (some content policies forbid it). */
@@ -118,7 +142,11 @@ async function create(onProgress, opts) {
   if (!hasWasmSimd()) {
     throw new EngineError('init', 'This browser is too old for the pose engine. Update it, or open Shot Lab in a current version of Chrome or Safari.');
   }
-  const model = await fetchWithProgress(resolve(ENGINE_FILES.model), (f) => onProgress?.('model', f));
+  const model = decodeBase64(await fetchWithProgress(resolve(ENGINE_FILES.model), (f) => onProgress?.('model', f)));
+  // An error page or a cut-off download is far smaller than the model.
+  if (model.length < 1e6) {
+    throw new EngineError('model', 'The pose model did not download correctly. Check your connection and reload the page.');
+  }
   onProgress?.('runtime', 0);
   const fileset = { wasmLoaderPath: resolve(ENGINE_FILES.loader), wasmBinaryPath: resolve(ENGINE_FILES.wasm) };
   const options = (delegate) => ({

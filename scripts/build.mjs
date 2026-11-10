@@ -37,17 +37,23 @@ const skeleton = `<!doctype html><html lang="en"><head><meta charset="utf-8"><me
 const engine = [
   ['node_modules/@mediapipe/tasks-vision/wasm/vision_wasm_internal.js', 'vision_wasm_internal.js'],
   ['node_modules/@mediapipe/tasks-vision/wasm/vision_wasm_internal.wasm', 'vision_wasm_internal.wasm'],
-  ['vendor/models/pose_landmarker_full.task', 'pose_landmarker_full.task'],
 ];
+const modelSrc = path.join(root, 'vendor/models/pose_landmarker_full.task');
+if (!fs.existsSync(modelSrc)) throw new Error('missing vendor/models/pose_landmarker_full.task. Run "npm run fetch-model" first.');
+// The model is published as base64 text: static hosts for pages like this one serve
+// scripts, styles, data and media, but not arbitrary binary files.
+const modelText = fs.readFileSync(modelSrc).toString('base64');
 for (const target of ['artifact', 'site']) {
   const dir = path.join(out, target, 'engine');
+  fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(dir, { recursive: true });
   for (const [from, name] of engine) {
     const src = path.join(root, from);
-    if (!fs.existsSync(src)) throw new Error(`missing ${from}. Run "npm install" and "npm run fetch-model" first.`);
+    if (!fs.existsSync(src)) throw new Error(`missing ${from}. Run "npm install" first.`);
     // Always recopy: the loader script and the binary must come from the same release.
     fs.copyFileSync(src, path.join(dir, name));
   }
+  fs.writeFileSync(path.join(dir, 'pose_landmarker_full.txt'), modelText);
 }
 fs.writeFileSync(path.join(out, 'artifact', 'shot-lab.html'), fragment);
 fs.writeFileSync(path.join(out, 'site', 'index.html'), skeleton);

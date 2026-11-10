@@ -1194,6 +1194,10 @@ select {
   color: var(--ink-2);
 }
 
+.gauge {
+  max-width: 460px;
+}
+
 .gauge svg {
   display: block;
   width: 100%;

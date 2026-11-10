@@ -8,6 +8,7 @@ import { formatValue, formatRange, formatSpread, timingWords, lengthFromPct } fr
 import { parseHeight, heightText } from '../src/app/views/profiles.js';
 import { buildCoachPrompt, normalizeCoachReply, coachErrorMessage } from '../src/app/ai.js';
 import { exampleReport, reportFor, verdict, buildSession } from '../src/app/session.js';
+import { decodeBase64 } from '../src/engine/pose.js';
 
 test('every finding the assessment can raise has a coaching entry', () => {
   for (const m of METRICS) {
@@ -153,4 +154,14 @@ test('AI write-up prompt and reply handling', () => {
   assert.equal(coachErrorMessage('cancelled'), '');
   assert.ok(coachErrorMessage('rate_limited').length > 10);
   assert.ok(coachErrorMessage('something_new').length > 10);
+});
+
+test('base64 model decoding', () => {
+  const bytes = new Uint8Array(1000).map((_, i) => (i * 37 + 11) % 256);
+  for (const len of [0, 1, 2, 3, 4, 999, 1000]) {
+    const src = bytes.subarray(0, len);
+    const text = Buffer.from(src).toString('base64');
+    const wrapped = text.replace(/(.{60})/g, '$1\n');
+    assert.deepEqual(Array.from(decodeBase64(new TextEncoder().encode(wrapped))), Array.from(src), `length ${len}`);
+  }
 });

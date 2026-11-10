@@ -149,9 +149,10 @@ function start(restored) {
   let lastRoute = currentRoute();
   window.addEventListener('hashchange', () => {
     const next = currentRoute();
-    // Leaving the capture screen mid-analysis would orphan the running job, so stay put.
-    if (app.state.busy && next !== lastRoute) {
-      location.hash = lastRoute;
+    // Leaving or redrawing the capture screen mid-analysis would orphan the running job,
+    // so put the address back and leave the screen alone. Stop is the way out.
+    if (app.state.busy) {
+      if (next !== lastRoute) location.hash = lastRoute;
       return;
     }
     lastRoute = next;

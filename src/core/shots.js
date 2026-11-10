@@ -16,7 +16,7 @@
 
 import { sideOf, otherSide, LM } from './landmarks.js';
 import { argMin, argMax, firstUpCrossing, firstDownCrossing, refineExtremum, sampleAt, clamp } from './geometry.js';
-import { median } from './stats.js';
+import { median, quantile } from './stats.js';
 import { derivative } from './filter.js';
 
 export const DETECT = Object.freeze({
@@ -216,9 +216,12 @@ function buildShot(track, hand, anchor, opts) {
   //    and perspective (toe and heel at different depths) does not matter.
   const footPts = [LM.L_HEEL, LM.L_TOE, LM.R_HEEL, LM.R_TOE];
   const plantMid = iDip >= 0 ? iDip : Math.floor(iSet);
-  const plantA = Math.max(0, plantMid - sec(0.3));
-  const plantB = Math.min(n - 1, plantMid + sec(0.05));
-  const bases = footPts.map((j) => median(Array.from(track.py[j].subarray(plantA, plantB + 1))));
+  // The planted level of each foot point is where it sat lowest in the picture between
+  // the dip and the release. A high quantile (not the median) keeps a step into the
+  // shot, or the first airborne frames, from raising the level.
+  const plantA = Math.max(0, plantMid - sec(0.2));
+  const plantB = Math.min(n - 1, Math.max(plantMid + sec(0.05), Math.floor(iRel)));
+  const bases = footPts.map((j) => quantile(Array.from(track.py[j].subarray(plantA, plantB + 1)), 0.85));
   const airStart = Math.max(0, plantMid);
   const airEnd = Math.min(n - 1, Math.ceil(iRel) + sec(1.4));
   const lift = new Float64Array(n);

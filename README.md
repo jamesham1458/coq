@@ -40,8 +40,15 @@ Everything runs in the browser. Videos are analysed on the device and never uplo
    | Apex | Vertex of a parabola fitted to hip height during flight |
 
 4. **Measure** (`src/core/metrics.js`). Angles in the plane of the shot come from the side view;
-   everything across the body comes from the front or back view; heights and timing come from any
-   view. Joint angles from a non-side view use the 3D landmarks and are labelled as estimates.
+   everything across the body comes from the front or back view and is measured in the shooter's
+   own frame, so a camera a little off the shot line does not skew it; timing comes from any
+   view. Joint angles and heights from a non-side view use the 3D landmarks and are labelled as
+   estimates.
+
+   The tracker always outputs all 33 landmarks and guesses the ones it cannot see. A landmark
+   that is out of the picture or scored as not visible is treated as missing: it is bridged to
+   keep the motion continuous, and no measurement is reported from it. A clip with the hips
+   out of frame is refused; cut-off feet or hands withhold only the measurements that need them.
 5. **Judge** (`src/core/specs.js`, `src/core/assess.js`). Each measurement has a target range and
    a wider acceptable range. Release timing and forward travel are judged against shot distance.
    Consistency is the standard deviation across shots, reported with the range the true value
@@ -58,6 +65,11 @@ Sources for the target ranges and cue rules are in [docs/REFERENCE.md](docs/REFE
 - Fingers and gaze are outside what body tracking resolves.
 - At 30 frames per second one frame is 33 ms; smaller timing differences are noise. Film at 60.
 - The tracker follows one person. Keep other people out of the picture.
+- Tested against a synthetic shooter with known answers, and on two real clips (one refused for
+  being waist-up, one full-body shot from behind). It has not been validated against
+  motion-capture data or a labelled set of real shots.
+- Readings that are low confidence, or estimates from a camera angle that is not the right one
+  for them, are reported as something to watch and never as a fix.
 - Targets describe what proficient shooters have in common. They are not one correct form.
 
 ## Run it
@@ -85,7 +97,7 @@ AI write-up. Anywhere else, history falls back to the browser's local storage.
 
 ```sh
 npm test                      # unit tests, no browser needed
-npm run test:browser          # both video readers in headless Chromium (needs Playwright and ffmpeg)
+npm run test:browser          # video readers and screens in headless Chromium (needs Playwright and ffmpeg)
 ```
 
 The unit tests run the whole analysis against a synthetic shooter (`src/core/synth.js`): a small
@@ -106,6 +118,8 @@ docs/         sources for the targets
 
 ## Third-party software
 
-- MediaPipe Tasks Vision and the Pose Landmarker model, Apache-2.0
+- MediaPipe Tasks Vision 0.10.35 and the Pose Landmarker model, Apache-2.0. The version is
+  pinned on purpose: the 1.x releases send usage metrics to Google, and this one does not, so
+  the page makes no requests beyond its own files and its fonts.
 - Mediabunny, MPL-2.0
 - Barlow Condensed, IBM Plex Sans and IBM Plex Mono, SIL Open Font License, loaded from Google Fonts

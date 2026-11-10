@@ -5,8 +5,12 @@
   "type": "module",
   "description": "Basketball jump-shot form analyzer that runs in the browser",
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test test/*.test.js",
     "build": "node scripts/build.mjs",
     "serve": "node scripts/serve.mjs"
+  },
+  "devDependencies": {
+    "@mediapipe/tasks-vision": "^1.2.2",
+    "esbuild": "^0.28.2"
   }
 }

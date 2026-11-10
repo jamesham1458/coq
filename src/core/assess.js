@@ -3,7 +3,7 @@
 // list of findings. Works for one shot (quick check) or many shots across several
 // camera angles (full assessment).
 
-import { METRICS, METRIC_BY_ID, SOURCES, CATEGORIES, MIN_SHOTS_FOR_SPREAD, CONFIDENCE_WEIGHT } from './specs.js';
+import { METRICS, METRIC_BY_ID, SOURCES, CATEGORIES, MIN_SHOTS_FOR_SPREAD, CONFIDENCE_WEIGHT, rangesFor } from './specs.js';
 import { summarize, sdBounds, mean, sd } from './stats.js';
 
 const CONF_RANK = { high: 3, medium: 2, low: 1 };
@@ -12,10 +12,10 @@ const CONF_RANK = { high: 3, medium: 2, low: 1 };
  * Judge one value against a metric's ranges.
  * @returns {{ status: 'good'|'watch'|'fix'|'info', score: number, direction: 'low'|'high'|null }}
  */
-export function judge(spec, value) {
-  if (!spec.ideal || !Number.isFinite(value)) return { status: 'info', score: NaN, direction: null };
-  const [a, b] = spec.ideal;
-  const [c, d] = spec.ok || spec.ideal;
+export function judge(spec, value, ranges = spec) {
+  if (!ranges.ideal || !Number.isFinite(value)) return { status: 'info', score: NaN, direction: null };
+  const [a, b] = ranges.ideal;
+  const [c, d] = ranges.ok || ranges.ideal;
   if (value >= a && value <= b) return { status: 'good', score: 100, direction: null };
   const low = value < a;
   const dist = low ? a - value : value - b;
@@ -89,9 +89,10 @@ function commonConfidence(confs) {
 /**
  * Assess a set of shots.
  * @param {ShotRecord[]} shots
+ * @param {{ distance?: 'close'|'mid'|'three' }} [ctx]  session context that shifts some targets
  * @returns {object} assessment (see the fields built below)
  */
-export function assessSession(shots) {
+export function assessSession(shots, ctx = {}) {
   const byView = {};
   for (const s of shots) byView[s.view] = (byView[s.view] || 0) + 1;
 
@@ -115,7 +116,8 @@ export function assessSession(shots) {
     const values = rows.map((s) => s.metrics[spec.id].value);
     const sum = summarize(values);
     const conf = commonConfidence(rows.map((s) => s.metrics[spec.id].conf));
-    const j = judge(spec, sum.mean);
+    const ranges = rangesFor(spec.id, ctx);
+    const j = judge(spec, sum.mean, ranges);
     const spread = rateSpread(spec, sum.sd, sum.n);
     const capped = rows.some((s) => s.metrics[spec.id].note === 'capped');
     metrics[spec.id] = {
@@ -132,6 +134,9 @@ export function assessSession(shots) {
       fallback: used !== groups[0],
       conf,
       capped,
+      // the target ranges this value was judged against (they can depend on shot distance)
+      ideal: ranges.ideal || null,
+      ok: ranges.ok || null,
       status: j.status,
       score: j.score,
       direction: j.direction,

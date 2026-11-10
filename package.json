@@ -6,11 +6,13 @@
   "description": "Basketball jump-shot form analyzer that runs in the browser",
   "scripts": {
     "test": "node --test test/*.test.js",
+    "fetch-model": "node scripts/fetch-model.mjs",
     "build": "node scripts/build.mjs",
-    "serve": "node scripts/serve.mjs"
+    "serve": "node scripts/serve.mjs --root build/site"
   },
   "devDependencies": {
-    "@mediapipe/tasks-vision": "^1.2.2",
-    "esbuild": "^0.28.2"
+    "@mediapipe/tasks-vision": "1.2.0",
+    "esbuild": "0.28.2",
+    "mediabunny": "1.62.1"
   }
 }

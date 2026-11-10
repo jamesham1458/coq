@@ -167,6 +167,35 @@ export const METRICS = Object.freeze([
 
 export const METRIC_BY_ID = Object.freeze(Object.fromEntries(METRICS.map((m) => [m.id, m])));
 
+/**
+ * Ranges that depend on how far from the basket the shots were taken. Shooters
+ * release earlier in the jump and travel further forward as the distance grows,
+ * so one fixed range would mark normal long-range shooting as a fault.
+ */
+export const BY_DISTANCE = Object.freeze({
+  close: {
+    releaseVsApex: { ideal: [-110, 70], ok: [-180, 120] },
+    driftForward: { ideal: [-2, 12], ok: [-6, 19] },
+  },
+  mid: {
+    releaseVsApex: { ideal: [-140, 40], ok: [-210, 90] },
+    driftForward: { ideal: [-2, 17], ok: [-6, 25] },
+  },
+  three: {
+    releaseVsApex: { ideal: [-180, 10], ok: [-250, 55] },
+    driftForward: { ideal: [-2, 27], ok: [-6, 35] },
+  },
+});
+
+/** The ranges in force for a metric given the session context. */
+export function rangesFor(id, ctx = {}) {
+  const spec = METRIC_BY_ID[id];
+  if (!spec) return null;
+  const table = BY_DISTANCE[ctx.distance] || BY_DISTANCE.mid;
+  const over = table[id];
+  return over ? { ideal: over.ideal, ok: over.ok } : { ideal: spec.ideal, ok: spec.ok };
+}
+
 /** Fewest shots for a spread (standard deviation) to be reported at all. */
 export const MIN_SHOTS_FOR_SPREAD = 4;
 

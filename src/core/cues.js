@@ -576,7 +576,7 @@ export function styleNotes(assessment, ctx = {}) {
   if (m.driftForward) {
     const v = m.driftForward.mean;
     const len = lengthFromPct(v, ctx.heightCm);
-    const where = Math.abs(v) < 1.5 ? 'on your take-off spot' : v > 0 ? `${formatValue('driftForward', v)} of your height forward${len ? ` (${len})` : ''}` : `${formatValue('driftForward', Math.abs(v))} of your height back${len ? ` (${len})` : ''}`;
+    const where = Math.abs(v) < 1.5 ? 'on your take-off spot' : `${formatValue('driftForward', Math.abs(v))} of your height ${v > 0 ? 'forward' : 'back'}${len ? `, ${len}` : ''}`;
     out.push({ id: 'landing', label: 'Landing', text: `You land ${where}.` });
   }
   return out;

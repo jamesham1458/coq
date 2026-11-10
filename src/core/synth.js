@@ -35,8 +35,8 @@ export const DEFAULT_SHOOTER = Object.freeze({
   setElbow: 82, // elbow angle at the set point (180 = straight)
   relShoulder: 140, // upper-arm angle at full extension
   maxElbow: 172, // elbow angle at full extension
-  flare: 6, // elbow rotated outward about the shoulder-wrist line
-  armTilt: 10, // whole arm tilted toward the head (ball over the eye rather than the shoulder)
+  flare: 4, // elbow rotated outward about the shoulder-wrist line
+  armTilt: 8, // whole arm tilted toward the head (ball over the eye rather than the shoulder)
   guidePush: 0, // 0 = guide hand comes off cleanly, 1 = guide arm extends with the shot
   // Base and balance
   stance: 1.0, // ankle spacing as a multiple of shoulder width

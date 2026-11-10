@@ -412,7 +412,8 @@ export function reportView(app) {
       const m = a.metrics[x.metric];
       return `${METRIC_BY_ID[x.metric].label} repeats from shot to shot (${formatSpread(x.metric, m.spread.sd)}).`;
     })
-    .filter(Boolean);
+    .filter(Boolean)
+    .slice(0, 6);
   const strengthSection = strengths.length
     ? h('section', { class: 'stack' }, h('div', { class: 'section-head' }, h('h2', null, 'What is working')), h('ul', { class: 'keep' }, strengths.map((t) => h('li', null, icon('check'), h('span', null, t)))))
     : null;
@@ -443,7 +444,7 @@ export function reportView(app) {
   const measureSection = h(
     'section',
     { class: 'stack' },
-    h('div', { class: 'section-head' }, h('h2', null, 'Every measurement'), h('span', { class: 'small muted' }, 'The dark band is the target range; the marker is your average')),
+    h('div', { class: 'section-head' }, h('h2', null, 'Every measurement'), h('span', { class: 'small muted' }, 'The shaded band is the target range; the marker is your average')),
     session.shots.length > 1
       ? h(
           'p',

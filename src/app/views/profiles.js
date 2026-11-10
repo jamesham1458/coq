@@ -85,7 +85,7 @@ export function profileForm(app, existing, opts = {}) {
       field('Height (optional)', height, 'Lets distances be shown in inches and centimetres.'),
     ),
     error,
-    h('div', { class: 'row' }, save, opts.onDone && existing ? h('button', { class: 'btn quiet', type: 'button', onClick: opts.onDone }, 'Cancel') : null),
+    h('div', { class: 'row' }, save, opts.onCancel ? h('button', { class: 'btn quiet', type: 'button', onClick: opts.onCancel }, 'Cancel') : null),
   );
   return form;
 }
@@ -99,12 +99,11 @@ export function profilesView(app) {
   const rows = profiles.map((p) => {
     const count = sessions.filter((s) => s.profileId === p.id).length;
     if (ui.editing === p.id) {
-      return h('li', { class: 'panel stack' }, h('h3', null, `Edit ${p.name}`), profileForm(app, p, {
-        onDone: () => {
-          ui.editing = null;
-          again();
-        },
-      }));
+      const close = () => {
+        ui.editing = null;
+        again();
+      };
+      return h('li', { class: 'panel stack' }, h('h3', null, `Edit ${p.name}`), profileForm(app, p, { onDone: close, onCancel: close }));
     }
     const isActive = active && active.id === p.id;
     return h(
@@ -170,6 +169,12 @@ export function profilesView(app) {
             ui.adding = false;
             again();
           },
+          onCancel: profiles.length
+            ? () => {
+                ui.adding = false;
+                again();
+              }
+            : null,
         }))
       : h('div', null, h('button', { class: 'btn ghost', type: 'button', onClick: () => {
           ui.adding = true;

@@ -45,8 +45,8 @@ for (const target of ['artifact', 'site']) {
   for (const [from, name] of engine) {
     const src = path.join(root, from);
     if (!fs.existsSync(src)) throw new Error(`missing ${from}. Run "npm install" and "npm run fetch-model" first.`);
-    const dst = path.join(dir, name);
-    if (!fs.existsSync(dst) || fs.statSync(dst).size !== fs.statSync(src).size) fs.copyFileSync(src, dst);
+    // Always recopy: the loader script and the binary must come from the same release.
+    fs.copyFileSync(src, path.join(dir, name));
   }
 }
 fs.writeFileSync(path.join(out, 'artifact', 'shot-lab.html'), fragment);

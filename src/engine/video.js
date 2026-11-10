@@ -25,6 +25,9 @@ export class VideoError extends Error {
   }
 }
 
+/** Clips that would yield more frames than this at 60 a second are read at 30. */
+export const MAX_FRAMES = 1500;
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function checkAbort(signal) {
@@ -92,9 +95,14 @@ async function openDecoded(file) {
     input.dispose();
     throw new VideoError('unsupported', 'This file has no video picture this browser can read.');
   }
-  const fps = samplingRate(nativeFps);
-  // High-speed recordings are thinned to about 60 frames a second.
-  const thin = Number.isFinite(nativeFps) && nativeFps > 70 ? 1 / 60 : 0;
+  // High-speed recordings are thinned to about 60 frames a second, and long clips to
+  // about 30, so a ten-shot clip does not take minutes to track on a phone.
+  let fps = samplingRate(nativeFps);
+  let thin = Number.isFinite(nativeFps) && nativeFps > 70 ? 1 / 60 : 0;
+  if (fps > 45 && duration * fps > MAX_FRAMES) {
+    fps = 30;
+    thin = 1 / 30;
+  }
 
   return {
     kind: 'decode',
@@ -314,7 +322,8 @@ async function openSeeking(primed) {
     throw new VideoError('unsupported', 'This video could not be opened.');
   }
   const nativeFps = await measureFrameRate(video);
-  const fps = samplingRate(nativeFps);
+  let fps = samplingRate(nativeFps);
+  if (fps > 45 && video.duration * fps > MAX_FRAMES) fps = 30;
   const hasCallback = typeof video.requestVideoFrameCallback === 'function';
   const scratch = document.createElement('canvas');
 

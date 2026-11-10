@@ -49,22 +49,38 @@ async function run(file, opts, opening) {
     stage('opening');
     reader = await opening;
     wake = await holdScreenAwake();
-    const tracker = await engine.open();
-    const frames = [];
+    let frames;
     let size;
+    const track = async () => {
+      const tracker = await engine.open();
+      frames = [];
+      try {
+        size = await reader.frames({
+          canvas: opts.canvas,
+          signal: opts.signal,
+          onFrame: (cv, t, fraction) => {
+            let r;
+            try {
+              r = tracker.detect(cv, t * 1000);
+            } catch (e) {
+              throw Object.assign(new Error(`The pose engine failed on a frame: ${(e && e.message) || e}`), { name: 'EngineError', stage: 'detect' });
+            }
+            frames.push({ t, lm: r.lm, world: r.world });
+            opts.onFrame?.(cv, r.lm);
+            stage('reading', fraction);
+          },
+        });
+      } finally {
+        tracker.close();
+      }
+    };
     try {
-      size = await reader.frames({
-        canvas: opts.canvas,
-        signal: opts.signal,
-        onFrame: (cv, t, fraction) => {
-          const r = tracker.detect(cv, t * 1000);
-          frames.push({ t, lm: r.lm, world: r.world });
-          opts.onFrame?.(cv, r.lm);
-          stage('reading', fraction);
-        },
-      });
-    } finally {
-      tracker.close();
+      await track();
+    } catch (e) {
+      // A graphics-backend failure part-way through: start the clip again on the CPU backend.
+      if (!(e && e.stage === 'detect') || engine.delegate !== 'GPU' || reader.kind !== 'decode') throw e;
+      engine.useCpu();
+      await track();
     }
     stage('measuring');
     const analysis = analyzeClip({ width: size.width, height: size.height, frames }, {

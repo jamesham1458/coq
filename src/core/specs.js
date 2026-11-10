@@ -2,6 +2,10 @@
 // sound. The ranges are deliberately wide: they mark what proficient shooters have
 // in common, not one "correct" form. Sources and reasoning are in docs/REFERENCE.md.
 //
+// Weights follow the evidence: traits with a measured link to accuracy (elbow under
+// the ball, lean at release, release timing for the distance) weigh most; traits that
+// good shooters differ on (set-point height, base width, a brief set) weigh least.
+//
 // `ideal`  the range that scores full marks
 // `ok`     the wider range that is acceptable but worth watching
 // Outside `ok` the measurement is reported as something to fix.
@@ -55,101 +59,101 @@ export const METRICS = Object.freeze([
   // ---- Base and load -----------------------------------------------------------------
   {
     id: 'kneeBend', label: 'Knee bend at the dip', category: 'base', unit: 'deg', source: 'sagittal',
-    ideal: [100, 132], ok: [88, 142], weight: 0.8, tight: 4, loose: 8, consistencyWeight: 0.7, digits: 0,
+    ideal: [95, 125], ok: [85, 136], weight: 0.7, tight: 4, loose: 8, consistencyWeight: 0.4, digits: 0,
     what: 'Knee angle at the deepest point of your load (180 is a straight leg).',
   },
   {
     id: 'stanceWidth', label: 'Base width', category: 'base', unit: 'x', source: 'frontal',
-    ideal: [0.8, 1.3], ok: [0.65, 1.55], weight: 0.5, tight: 0.08, loose: 0.18, consistencyWeight: 0.3, digits: 2,
+    ideal: [0.75, 1.35], ok: [0.6, 1.6], weight: 0.4, tight: 0.08, loose: 0.18, consistencyWeight: 0.3, digits: 2,
     what: 'Distance between your ankles as a multiple of your shoulder width, at the dip.',
   },
   {
     id: 'kneeTrack', label: 'Knee tracking', category: 'base', unit: 'x', source: 'frontal',
-    ideal: [0.85, 1.3], ok: [0.7, 1.45], weight: 0.5, tight: 0.08, loose: 0.18, consistencyWeight: 0.2, digits: 2,
+    ideal: [0.85, 1.3], ok: [0.7, 1.45], weight: 0.4, tight: 0.08, loose: 0.18, consistencyWeight: 0.2, digits: 2,
     what: 'Distance between your knees as a multiple of the distance between your ankles, at the dip. Under 1 means the knees are inside the feet.',
   },
   // ---- Set point -----------------------------------------------------------------------
   {
     id: 'setElbow', label: 'Elbow angle at the set point', category: 'set', unit: 'deg', source: 'sagittal',
-    ideal: [65, 95], ok: [55, 108], weight: 0.9, tight: 4, loose: 8, consistencyWeight: 1, digits: 0,
+    ideal: [58, 88], ok: [50, 100], weight: 0.6, tight: 4, loose: 8, consistencyWeight: 0.8, digits: 0,
     what: 'How bent your shooting elbow is at the moment the arm starts to push.',
   },
   {
     id: 'setHeight', label: 'Set-point height', category: 'set', unit: 'pct', source: 'height',
-    ideal: [-2, 14], ok: [-7, 18], weight: 0.8, tight: 1.5, loose: 3, consistencyWeight: 1, digits: 1,
+    ideal: [-4, 16], ok: [-9, 20], weight: 0.4, tight: 1.5, loose: 3, consistencyWeight: 0.8, digits: 1,
     what: 'Height of your shooting wrist relative to your eyes when the push starts, as a percentage of your height.',
   },
   {
     id: 'elbowFlare', label: 'Elbow under the ball', category: 'set', unit: 'deg', source: 'frontal',
-    ideal: [-10, 14], ok: [-18, 24], weight: 1, tight: 4, loose: 8, consistencyWeight: 0.8, digits: 0,
+    ideal: [-10, 15], ok: [-18, 26], weight: 0.9, tight: 4, loose: 8, consistencyWeight: 0.8, digits: 0,
     what: 'How far your forearm leans inward from the elbow at the set point, seen from the front or back. Zero is a vertical forearm with the elbow directly under the hand.',
   },
   {
     id: 'setLine', label: 'Ball line at the set point', category: 'set', unit: 'ratio', source: 'frontal',
-    ideal: [0.3, 1.2], ok: [0.05, 1.45], weight: 0.7, tight: 0.12, loose: 0.25, consistencyWeight: 0.6, digits: 2,
+    ideal: [0.3, 1.2], ok: [0.05, 1.45], weight: 0.6, tight: 0.12, loose: 0.25, consistencyWeight: 0.6, digits: 2,
     what: 'Where your shooting hand sits across your body at the set point: 0 is the middle of your head, 1 is directly over your shooting shoulder.',
   },
   {
     id: 'setPause', label: 'Pause at the set point', category: 'set', unit: 'ms', source: 'any',
-    ideal: [0, 170], ok: [0, 300], weight: 0.6, tight: 40, loose: 90, consistencyWeight: 0.4, digits: 0,
+    ideal: [-INF, 200], ok: [-INF, 320], weight: 0.5, tight: 40, loose: 90, consistencyWeight: 0.4, digits: 0,
     what: 'How long your arm waits at the set point before it starts to extend.',
   },
   // ---- Release -------------------------------------------------------------------------
   {
     id: 'armExtension', label: 'Elbow extension', category: 'release', unit: 'deg', source: 'sagittal',
-    ideal: [160, 180], ok: [150, 180], weight: 0.9, tight: 4, loose: 8, consistencyWeight: 0.6, digits: 0,
+    ideal: [160, INF], ok: [150, INF], weight: 0.7, tight: 4, loose: 8, consistencyWeight: 0.6, digits: 0,
     what: 'How straight your shooting elbow gets once the extension has finished.',
   },
   {
     id: 'armAngle', label: 'Arm angle at full extension', category: 'release', unit: 'deg', source: 'sagittal',
-    ideal: [48, 70], ok: [42, 78], weight: 0.9, tight: 3.5, loose: 7, consistencyWeight: 1, digits: 0,
+    ideal: [42, 70], ok: [35, 78], weight: 0.6, tight: 3.5, loose: 7, consistencyWeight: 1, digits: 0,
     what: 'Angle of the line from your shoulder to your wrist above the horizontal when your arm is fully extended.',
   },
   {
     id: 'reachHeight', label: 'Release height', category: 'release', unit: 'pct', source: 'height',
-    ideal: [11, 30], ok: [7, 34], weight: 0.7, tight: 1.5, loose: 3, consistencyWeight: 0.8, digits: 1,
+    ideal: [11, INF], ok: [7, INF], weight: 0.5, tight: 1.5, loose: 3, consistencyWeight: 0.8, digits: 1,
     what: 'How far above your eyes your shooting wrist gets at the top of the release, as a percentage of your height.',
   },
   {
     id: 'releaseVsApex', label: 'Release timing against the jump', category: 'release', unit: 'ms', source: 'any',
-    ideal: [-130, 25], ok: [-200, 65], weight: 0.9, tight: 25, loose: 50, consistencyWeight: 1, digits: 0,
+    ideal: [-130, 25], ok: [-200, 65], weight: 0.7, tight: 25, loose: 50, consistencyWeight: 1, digits: 0,
     what: 'When the ball leaves relative to the top of your jump. Negative is on the way up, positive is on the way down.',
   },
   {
     id: 'guideFollow', label: 'Guide hand', category: 'release', unit: 'pctOf', source: 'frontal',
-    ideal: [-INF, 35], ok: [-INF, 55], weight: 0.6, tight: 12, loose: 25, consistencyWeight: 0.3, digits: 0,
+    ideal: [-INF, 35], ok: [-INF, 55], weight: 0.5, tight: 12, loose: 25, consistencyWeight: 0.3, digits: 0,
     what: 'How much of your shooting hand’s upward travel your guide hand copies during the push. A guide hand that comes off cleanly copies little of it.',
   },
   // ---- Follow-through ---------------------------------------------------------------------
   {
     id: 'followHold', label: 'Follow-through hold', category: 'follow', unit: 's', source: 'any',
-    ideal: [0.5, INF], ok: [0.3, INF], weight: 0.7, tight: 0.12, loose: 0.25, consistencyWeight: 0.3, digits: 2,
+    ideal: [0.5, INF], ok: [0.3, INF], weight: 0.5, tight: 0.12, loose: 0.25, consistencyWeight: 0.3, digits: 2,
     what: 'How long your arm stays extended above eye level after the release.',
   },
   {
     id: 'finishLine', label: 'Follow-through line', category: 'follow', unit: 'ratio', source: 'frontal',
-    ideal: [0.25, 1.35], ok: [-0.05, 1.65], weight: 0.7, tight: 0.12, loose: 0.25, consistencyWeight: 0.7, digits: 2,
+    ideal: [0.25, 1.35], ok: [-0.05, 1.65], weight: 0.6, tight: 0.12, loose: 0.25, consistencyWeight: 0.8, digits: 2,
     what: 'Where your shooting hand finishes across your body: 0 is the middle of your head, 1 is directly over your shooting shoulder.',
   },
   // ---- Balance -------------------------------------------------------------------------
   {
     id: 'trunkLean', label: 'Lean at release', category: 'balance', unit: 'deg', source: 'sideOnly',
-    ideal: [-5, 9], ok: [-10, 15], weight: 0.8, tight: 2.5, loose: 5, consistencyWeight: 0.6, digits: 0,
+    ideal: [-7, 5], ok: [-13, 10], weight: 0.8, tight: 2.5, loose: 5, consistencyWeight: 0.6, digits: 0,
     what: 'How far your trunk leans at release, seen from the side. Positive is toward the basket, negative is away from it.',
   },
   {
     id: 'driftForward', label: 'Forward drift', category: 'balance', unit: 'pct', source: 'sideOnly',
-    ideal: [-1, 13], ok: [-5, 20], weight: 0.7, tight: 2, loose: 4.5, consistencyWeight: 0.7, digits: 1,
+    ideal: [-1, 13], ok: [-5, 20], weight: 0.5, tight: 2, loose: 4.5, consistencyWeight: 0.5, digits: 1,
     what: 'How far your feet travel between take-off and landing along the line of the shot, as a percentage of your height. Positive is toward the basket.',
   },
   {
     id: 'sideLean', label: 'Side lean at release', category: 'balance', unit: 'deg', source: 'frontal',
-    ideal: [-4, 4], ok: [-8, 8], weight: 0.7, tight: 2, loose: 4, consistencyWeight: 0.5, digits: 0,
+    ideal: [-4, 4], ok: [-8, 8], weight: 0.6, tight: 2, loose: 4, consistencyWeight: 0.5, digits: 0,
     what: 'How far your trunk leans sideways at release, seen from the front or back. Positive is toward your shooting side.',
   },
   {
     id: 'driftSide', label: 'Sideways drift', category: 'balance', unit: 'pct', source: 'frontal',
-    ideal: [-3, 3], ok: [-6.5, 6.5], weight: 0.7, tight: 1.5, loose: 3.5, consistencyWeight: 0.6, digits: 1,
+    ideal: [-5, 5], ok: [-11, 11], weight: 0.4, tight: 1.5, loose: 3.5, consistencyWeight: 0.4, digits: 1,
     what: 'How far your feet travel sideways between take-off and landing, as a percentage of your height. Positive is toward your shooting side.',
   },
   // ---- Rhythm (reported and tracked for consistency, not judged against a target) -----------

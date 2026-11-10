@@ -85,7 +85,7 @@ export function normalizeCoachReply(raw) {
   const r = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const priorities = Array.isArray(r.priorities)
     ? r.priorities
-        .filter((p) => p && typeof p === 'object')
+        .filter((p) => p && typeof p === 'object' && asText(p.title))
         .slice(0, 3)
         .map((p) => ({
           title: asText(p.title),
@@ -96,7 +96,6 @@ export function normalizeCoachReply(raw) {
           feel: asText(p.feel),
           watchOut: asText(p.watchOut),
         }))
-        .filter((p) => p.title)
     : [];
   return {
     headline: asText(r.headline),

@@ -54,15 +54,24 @@ const SPREAD_BUCKETS = Object.freeze({
   balance: ['trunkLean', 'driftForward', 'sideLean', 'driftSide'],
 });
 
+/**
+ * How much extra weight a measurement gets for being off target. A plain average
+ * lets one clear flaw vanish among a dozen sound readings; this makes a score move
+ * visibly when something needs fixing.
+ */
+export const DEFICIT_EMPHASIS = 4;
+
+/** Weighted mean of 0-100 scores in which low scores count for more. */
 function weightedMean(items) {
   let sw = 0;
   let s = 0;
   for (const [value, weight] of items) {
     if (!Number.isFinite(value) || !(weight > 0)) continue;
-    s += value * weight;
-    sw += weight;
+    const w = weight * (1 + (DEFICIT_EMPHASIS * (100 - value)) / 100);
+    s += value * w;
+    sw += w;
   }
-  return sw > 0 ? s / sw : NaN;
+  return sw > 0 ? Math.min(100, s / sw) : NaN;
 }
 
 function commonConfidence(confs) {

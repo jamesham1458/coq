@@ -4,7 +4,8 @@ import { createStore } from './app/store.js';
 import { h, mount } from './app/dom.js';
 import { hideTip } from './app/charts.js';
 import { canCompileWasm, loadEngine } from './engine/pose.js';
-import { releaseClip } from './app/pipeline.js';
+import { releaseClip, processClip } from './app/pipeline.js';
+import { openClip } from './engine/video.js';
 import { homeView } from './app/views/home.js';
 import { captureView } from './app/views/capture.js';
 import { reportView } from './app/views/report.js';
@@ -174,7 +175,8 @@ function start(restored) {
   render();
   store.connect();
 
-  window.shotLab = { app };
+  // Handles for automated browser checks.
+  window.shotLab = { app, openClip, processClip };
 }
 
 // Keep the viewer's place when the page is republished while open.

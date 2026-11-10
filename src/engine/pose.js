@@ -71,6 +71,18 @@ export function canCompileWasm() {
   }
 }
 
+/**
+ * Which backend to try first. The GPU backend is faster where it works, but it has a
+ * history of failing on Safari and iOS in ways that do not raise an error, so WebKit
+ * browsers start on the CPU backend, which is slower and dependable.
+ */
+export function preferredDelegate() {
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
+  const webkitOnly = /AppleWebKit/.test(ua) && !/Chrome|Chromium|Edg\//.test(ua);
+  const iosDevice = /iP(hone|ad|od)/.test(ua) || (typeof navigator !== 'undefined' && navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  return webkitOnly || iosDevice ? 'CPU' : 'GPU';
+}
+
 /** WebAssembly SIMD is required by the engine build that ships with the page. */
 export function hasWasmSimd() {
   try {
@@ -117,7 +129,7 @@ async function create(onProgress, opts) {
     minPosePresenceConfidence: 0.5,
     minTrackingConfidence: 0.5,
   });
-  let delegate = opts.delegate || 'GPU';
+  let delegate = opts.delegate || preferredDelegate();
   const start = async () => {
     try {
       return await PoseLandmarker.createFromOptions(fileset, options(delegate));
@@ -138,6 +150,18 @@ async function create(onProgress, opts) {
   return {
     get delegate() {
       return delegate;
+    },
+    /** Switch to the CPU backend for every tracker opened from now on. */
+    useCpu() {
+      delegate = 'CPU';
+      if (spare) {
+        try {
+          spare.close();
+        } catch {
+          // Nothing to do if it was already gone.
+        }
+        spare = null;
+      }
     },
     /**
      * A tracker for one clip. Each clip gets its own so tracking state from one

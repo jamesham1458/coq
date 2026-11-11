@@ -107,6 +107,21 @@ await step('delete a session, then the profile', async () => {
   const h1 = await page.locator('main h1').innerText();
   if (!/No report yet/.test(h1)) throw new Error('report screen after deleting everything shows: ' + h1);
 });
+await step('history arriving in the background does not wipe a half-filled form', async () => {
+  await page.goto('http://127.0.0.1:4471/#profiles');
+  await page.fill('#pf-name-new', 'Half typed');
+  // Stored data changes while the form is being filled in (as when account history loads).
+  await page.evaluate(() => window.shotLab.app.store.saveProfile({ id: 'pbg', name: 'Background', hand: 'left', heightCm: null, createdAt: 1 }));
+  const typed = await page.inputValue('#pf-name-new');
+  if (typed !== 'Half typed') throw new Error(`the form was repainted and now holds "${typed}"`);
+  await page.getByRole('button', { name: 'Add shooter' }).click();
+  await page.waitForFunction(() => /Background/.test(document.body.innerText) && /Half typed/.test(document.body.innerText));
+  await page.evaluate(async () => {
+    const { store } = window.shotLab.app;
+    for (const p of [...store.state.profiles]) await store.deleteProfile(p.id);
+    window.shotLab.app.setProfile(null);
+  });
+});
 await step('all routes render with nothing stored', async () => {
   for (const r of ['home', 'quick', 'assess', 'progress', 'guide', 'profiles', 'report', 'nonsense']) {
     await page.goto(`http://127.0.0.1:4471/#${r}`);

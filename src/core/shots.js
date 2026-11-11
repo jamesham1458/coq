@@ -8,8 +8,8 @@
 //                its set-point angle to its extended angle (an estimate; see README)
 //   full ext.    the first moment the elbow is within 3 degrees of the angle it holds
 //                once the extension has finished
-//   dip          the deepest knee bend before the release
-//   take-off     both feet clear the ground level they stood on during the dip
+//   dip          the deepest knee bend before the arm starts to push
+//   take-off     every foot in view clears the ground level it stood on during the dip
 //   apex         the top of the flight (vertex of a parabola fitted to hip height)
 //   landing      the first foot returns to the ground
 //   follow end   the arm stops being extended above eye level

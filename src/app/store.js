@@ -4,6 +4,10 @@
 // private to each signed-in person, so they follow the person across devices. Anywhere
 // else (or when signed out) they fall back to this browser's local storage.
 // Only measurements are stored. Videos and still frames never leave the device.
+//
+// Local storage doubles as a holding place: anything saved before the account's history
+// has loaded, or that the account did not confirm, is kept there and sent to the account
+// the next time it connects. Nothing saved is ever dropped because the account was slow.
 
 const LOCAL_KEY = 'shotlab.v1';
 const ACTIVE_KEY = 'shotlab.activeProfile';
@@ -38,6 +42,26 @@ export function newId(prefix) {
  * @typedef {{ id:string, profileId:string, mode:'quick'|'full', createdAt:number, distance:string|null, shots:object[], clips:object[], app:string }} Session
  */
 
+const KINDS = ['profiles', 'sessions'];
+/** How long to wait for the account to confirm a write before keeping a copy on the device. */
+const CONFIRM_MS = 6000;
+
+function confirmed(promise, ms = CONFIRM_MS) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('The account did not confirm the save in time.')), ms);
+    Promise.resolve(promise).then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
 export function createStore() {
   const listeners = new Set();
   const state = {
@@ -47,6 +71,8 @@ export function createStore() {
     cloud: 'pending',
     /** true when the last save to the device failed (storage full or blocked) */
     localBlocked: false,
+    /** items kept on this device that the account has not confirmed yet */
+    waiting: 0,
     profiles: [],
     sessions: [],
   };
@@ -54,6 +80,10 @@ export function createStore() {
   state.profiles = local.profiles;
   state.sessions = local.sessions;
   let cloudRoot = null;
+  /** what the account holds, as last reported */
+  const remote = { profiles: [], sessions: [] };
+  /** items on this device that the account does not have yet */
+  const held = { profiles: [], sessions: [] };
 
   const emit = () => {
     for (const fn of listeners) {
@@ -72,6 +102,59 @@ export function createStore() {
     state.sessions.sort((a, b) => b.createdAt - a.createdAt);
   };
   sortAll();
+
+  /** In cloud mode the view is the account's items plus the ones still held on the device. */
+  const showCloud = () => {
+    for (const kind of KINDS) {
+      const have = new Set(remote[kind].map((x) => x.id));
+      held[kind] = held[kind].filter((x) => !have.has(x.id));
+      state[kind] = [...remote[kind], ...held[kind]];
+    }
+    state.waiting = held.profiles.length + held.sessions.length;
+    sortAll();
+  };
+  const hold = (kind, item) => {
+    held[kind] = [...held[kind].filter((x) => x.id !== item.id), item];
+    const data = readLocal();
+    data[kind] = [...data[kind].filter((x) => x.id !== item.id), item];
+    return writeLocal(data);
+  };
+  const unhold = (kind, id) => {
+    held[kind] = held[kind].filter((x) => x.id !== id);
+    const data = readLocal();
+    if (data[kind].some((x) => x.id === id)) {
+      data[kind] = data[kind].filter((x) => x.id !== id);
+      writeLocal(data);
+    }
+  };
+
+  /** Send everything held on this device to the account; forget the local copies once it has them all. */
+  async function sendHeld(root) {
+    const data = readLocal();
+    for (const kind of KINDS) {
+      const have = new Set(remote[kind].map((x) => x.id));
+      held[kind] = data[kind].filter((x) => !have.has(x.id));
+    }
+    showCloud();
+    emit();
+    let all = true;
+    for (const kind of KINDS) {
+      for (const item of [...held[kind]]) {
+        try {
+          await confirmed(root.collection(kind).doc(item.id).set(strip(item)));
+        } catch {
+          all = false;
+        }
+      }
+    }
+    if (all && (data.profiles.length || data.sessions.length)) {
+      // Keep anything that was put on hold while this was running.
+      const now = readLocal();
+      const sent = { profiles: new Set(data.profiles.map((x) => x.id)), sessions: new Set(data.sessions.map((x) => x.id)) };
+      writeLocal({ profiles: now.profiles.filter((x) => !sent.profiles.has(x.id)), sessions: now.sessions.filter((x) => !sent.sessions.has(x.id)) });
+      for (const kind of KINDS) held[kind] = held[kind].filter((x) => !sent[kind].has(x.id));
+    }
+  }
 
   async function connect() {
     const claude = typeof window !== 'undefined' ? window.claude : null;
@@ -102,64 +185,43 @@ export function createStore() {
       emit();
       return;
     }
-    const localSnapshot = { profiles: [...state.profiles], sessions: [...state.sessions] };
-    let gotProfiles = false;
-    let gotSessions = false;
-    let migrated = false;
+    const got = { profiles: false, sessions: false };
     const slowTimer = setTimeout(() => {
-      if (!(gotProfiles && gotSessions)) {
+      if (!(got.profiles && got.sessions)) {
         state.cloud = 'slow';
         emit();
       }
     }, 10000);
     const settle = async () => {
-      if (!(gotProfiles && gotSessions)) return;
+      if (!(got.profiles && got.sessions) || state.mode === 'cloud') return;
       clearTimeout(slowTimer);
       cloudRoot = root;
       state.mode = 'cloud';
       state.cloud = 'ready';
-      // First visit with history made on this device: carry it over once.
-      if (!migrated && !state.profiles.length && localSnapshot.profiles.length) {
-        migrated = true;
-        try {
-          for (const p of localSnapshot.profiles) await root.collection('profiles').doc(p.id).set(strip(p));
-          for (const s of localSnapshot.sessions) await root.collection('sessions').doc(s.id).set(strip(s));
-        } catch {
-          // The listeners will show whatever did get written.
-        }
-      }
-      sortAll();
+      // History made on this device (before signing in, or while the account could not
+      // be reached) is carried over to the account.
+      await sendHeld(root);
+      showCloud();
       emit();
     };
     const fail = () => {
       clearTimeout(slowTimer);
-      if (state.mode !== 'cloud') {
-        state.cloud = 'error';
-        state.profiles = localSnapshot.profiles;
-        state.sessions = localSnapshot.sessions;
-        sortAll();
-      }
+      // Until the account has answered, the device's own history stays on screen untouched.
+      if (state.mode !== 'cloud') state.cloud = 'error';
       emit();
     };
     const docs = (snap) => snap.docs.map((d) => ({ ...clone(d.data()), id: d.id }));
-    root.collection('profiles').onSnapshot((snap) => {
-      if (snap.metadata.fromCache && !gotProfiles && snap.empty) return;
-      state.profiles = docs(snap);
-      gotProfiles = true;
-      if (state.mode === 'cloud') {
-        sortAll();
-        emit();
-      } else settle();
-    }, fail);
-    root.collection('sessions').onSnapshot((snap) => {
-      if (snap.metadata.fromCache && !gotSessions && snap.empty) return;
-      state.sessions = docs(snap);
-      gotSessions = true;
-      if (state.mode === 'cloud') {
-        sortAll();
-        emit();
-      } else settle();
-    }, fail);
+    for (const kind of KINDS) {
+      root.collection(kind).onSnapshot((snap) => {
+        if (snap.metadata && snap.metadata.fromCache && !got[kind] && snap.empty) return;
+        remote[kind] = docs(snap);
+        got[kind] = true;
+        if (state.mode === 'cloud') {
+          showCloud();
+          emit();
+        } else settle();
+      }, fail);
+    }
   }
 
   function strip(obj) {
@@ -178,7 +240,15 @@ export function createStore() {
     sortAll();
     emit();
     if (state.mode === 'cloud' && cloudRoot) {
-      await cloudRoot.collection(kind).doc(item.id).set(strip(item));
+      try {
+        await confirmed(cloudRoot.collection(kind).doc(item.id).set(strip(item)));
+      } catch {
+        // Not confirmed by the account: keep it on this device and send it next time.
+        const kept = hold(kind, item);
+        showCloud();
+        emit();
+        if (!kept) throw new Error('It could not be saved to your account or to this device.');
+      }
     } else {
       persistLocal();
       if (state.localBlocked) throw new Error('This browser would not save the data.');
@@ -187,9 +257,16 @@ export function createStore() {
 
   async function remove(kind, id) {
     state[kind] = state[kind].filter((x) => x.id !== id);
-    emit();
-    if (state.mode === 'cloud' && cloudRoot) await cloudRoot.collection(kind).doc(id).delete();
-    else persistLocal();
+    if (state.mode === 'cloud' && cloudRoot) {
+      // A copy held on the device must go too, or it would come back on the next visit.
+      unhold(kind, id);
+      state.waiting = held.profiles.length + held.sessions.length;
+      emit();
+      await confirmed(cloudRoot.collection(kind).doc(id).delete());
+    } else {
+      emit();
+      persistLocal();
+    }
   }
 
   return {

@@ -165,10 +165,24 @@ function start(restored) {
   document.getElementById('who').addEventListener('click', () => app.go('profiles'));
 
   // Stored data arriving (or changing on another device) repaints screens that show it.
+  // A form the person has started filling in: focus is in one of its fields, or a text
+  // field no longer holds what it was drawn with.
+  const formInUse = () => {
+    const el = document.activeElement;
+    if (el && viewEl.contains(el) && el.closest('form') && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
+    for (const input of viewEl.querySelectorAll('form input[type="text"], form textarea')) {
+      if (input.value !== input.defaultValue) return true;
+    }
+    return false;
+  };
   store.onChange(() => {
     paintWho();
     if (app.state.busy) return;
-    if (['home', 'progress', 'profiles'].includes(app.state.route)) render();
+    if (!['home', 'progress', 'profiles'].includes(app.state.route)) return;
+    // Repainting would wipe a half-filled form. The form repaints the screen itself
+    // when it is saved or cancelled, which picks up whatever arrived meanwhile.
+    if (formInUse()) return;
+    render();
   });
 
   if (restored && typeof restored.route === 'string' && ROUTES[restored.route] && !location.hash) {

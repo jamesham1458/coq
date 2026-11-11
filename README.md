@@ -35,8 +35,8 @@ Everything runs in the browser. Videos are analysed on the device and never uplo
    | Set point | Start of the final, fast elbow extension |
    | Release (estimated) | Elbow has covered 85% of the way from its set-point angle to its extended angle |
    | Full extension | Elbow within 3° of the angle it holds after extending |
-   | Dip | Deepest knee bend before the release |
-   | Take-off / landing | Every heel and toe point clears / returns to the level it stood on during the dip |
+   | Dip | Deepest knee bend before the arm starts to push |
+   | Take-off / landing | Every heel and toe point in view clears / returns to the level it stood on during the dip |
    | Apex | Vertex of a parabola fitted to hip height during flight |
 
 4. **Measure** (`src/core/metrics.js`). Angles in the plane of the shot come from the side view;
@@ -49,6 +49,13 @@ Everything runs in the browser. Videos are analysed on the device and never uplo
    that is out of the picture or scored as not visible is treated as missing: it is bridged to
    keep the motion continuous, and no measurement is reported from it. A clip with the hips
    out of frame is refused; cut-off feet or hands withhold only the measurements that need them.
+   One visible side of the body is enough for the legs, feet and eye line, since the far side
+   is often hidden in a side view.
+
+   Body size is measured for each shot where it was taken, so a shooter who moves toward or
+   away from the camera between shots is still measured correctly. Slow-motion video is
+   recognised (from flight time, the length of the push, and how gently the body falls) and
+   its timing and jump numbers are left out, while angles and positions are still measured.
 5. **Judge** (`src/core/specs.js`, `src/core/assess.js`). Each measurement has a target range and
    a wider acceptable range. Release timing and forward travel are judged against shot distance.
    Consistency is the standard deviation across shots, reported with the range the true value
@@ -66,8 +73,8 @@ Sources for the target ranges and cue rules are in [docs/REFERENCE.md](docs/REFE
 - At 30 frames per second one frame is 33 ms; smaller timing differences are noise. Film at 60.
 - The tracker follows one person. Keep other people out of the picture.
 - Tested against a synthetic shooter with known answers, and on two real clips (one refused for
-  being waist-up, one full-body shot from behind). It has not been validated against
-  motion-capture data or a labelled set of real shots.
+  being waist-up, one full-body slow-motion shot from behind). It has not been validated
+  against motion-capture data or a labelled set of real shots.
 - Readings that are low confidence, or estimates from a camera angle that is not the right one
   for them, are reported as something to watch and never as a fix.
 - Targets describe what proficient shooters have in common. They are not one correct form.
@@ -91,12 +98,14 @@ fragment plus the engine files, for publishing as a Claude artifact:
 
 Inside the Claude viewer the page uses three capabilities, all optional: `db` and `user` to keep
 profiles and history in the signed-in person's private storage, and `sample` (with images) for the
-AI write-up. Anywhere else, history falls back to the browser's local storage.
+AI write-up. Anywhere else, history falls back to the browser's local storage. Anything saved
+before the account's history has loaded, or that the account does not confirm, is held in
+local storage and sent to the account the next time the page opens.
 
 ## Test it
 
 ```sh
-npm test                      # unit tests, no browser needed
+npm test                      # unit tests (analysis, wording, storage), no browser needed
 npm run test:browser          # video readers and screens in headless Chromium (needs Playwright and ffmpeg)
 ```
 

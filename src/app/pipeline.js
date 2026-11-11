@@ -106,6 +106,7 @@ async function run(file, opts, opening) {
       quality: s.quality,
       lowQuality: !!s.lowQuality,
       followCapped: s.followCapped,
+      slow: !!s.slow,
       stills: {},
       made: null,
       included: true,

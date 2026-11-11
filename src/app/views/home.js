@@ -134,7 +134,8 @@ export function homeView(app) {
 function cloudLine(app) {
   const st = app.store.state;
   let text = '';
-  if (st.mode === 'cloud') text = 'History is saved to your Claude account and follows you across devices.';
+  if (st.mode === 'cloud' && st.waiting) text = `${st.waiting === 1 ? '1 item is' : `${st.waiting} items are`} kept on this device because your Claude account did not confirm the save. ${st.waiting === 1 ? 'It' : 'They'} will be sent the next time Shot Lab opens.`;
+  else if (st.mode === 'cloud') text = 'History is saved to your Claude account and follows you across devices.';
   else if (st.cloud === 'pending') text = 'Checking for saved history…';
   else if (st.cloud === 'slow') text = 'Your saved history cannot be reached yet. Anything new is kept on this device for now.';
   else text = 'History is saved in this browser only. Open Shot Lab signed in to Claude to keep it across devices.';

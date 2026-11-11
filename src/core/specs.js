@@ -94,7 +94,7 @@ export const METRICS = Object.freeze([
     what: 'Where your shooting hand sits across your body at the set point: 0 is the middle of your head, 1 is directly over your shooting shoulder.',
   },
   {
-    id: 'setPause', label: 'Pause at the set point', category: 'set', unit: 'ms', source: 'any',
+    id: 'setPause', label: 'Pause at the set point', category: 'set', unit: 'ms', source: 'sagittal',
     ideal: [-INF, 200], ok: [-INF, 320], weight: 0.5, tight: 40, loose: 90, consistencyWeight: 0.4, digits: 0,
     what: 'How long your arm waits at the set point before it starts to extend.',
   },

@@ -58,7 +58,7 @@ export function warningText(w, clip) {
     case 'offHandSide':
       return 'This was filmed from your guide-hand side, so your shooting arm is partly hidden and arm readings are less exact. Film from your shooting-hand side.';
     case 'slowMotion':
-      return 'This looks like slow-motion video, so timing and jump numbers will be wrong. Record at normal speed.';
+      return 'This looks like slow-motion video, so timing and jump numbers were left out. Angles and positions are still measured. Record at normal speed to get everything.';
     default:
       return w.code;
   }

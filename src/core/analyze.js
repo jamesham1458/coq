@@ -11,6 +11,13 @@ import { median } from './stats.js';
 export const SIDE_TOLERANCE_DEG = 27;
 /** A camera within this many degrees of the line of the shot counts as a front or back view. */
 export const FRONT_TOLERANCE_DEG = 32;
+/** Shortest clip (seconds) that can hold a shot, and the least time a person has to be tracked in it. */
+export const MIN_CLIP_S = 1;
+export const MIN_TRACKED_S = 1;
+/** Apparent gravity (m/s^2) below which the video is taken to be slow motion. Real speed gives about 9.8. */
+export const SLOW_MOTION_GRAVITY = 4.5;
+/** Measurements that are only right at real speed. They are withheld from slow-motion video. */
+export const SPEED_METRICS = Object.freeze(['tempo', 'setPause', 'releaseVsApex', 'followHold', 'jumpHeight']);
 /** Past this many degrees off the shot line, a front or back clip gets a warning. */
 export const OFF_AXIS_WARN_DEG = 15;
 
@@ -124,8 +131,10 @@ export function analyzeClip(raw, opts = {}) {
       info,
     };
   };
-  if (track.n < 10) return empty('tooShort');
-  if (track.detectedFraction < 0.3) return empty('noPerson');
+  if (track.n < 10 || track.n * track.dt < MIN_CLIP_S) return empty('tooShort');
+  // "No person" means next to nothing was tracked. A shooter who is off screen most of
+  // the time fetching the ball is fine as long as they are tracked while shooting.
+  if (track.detectedFraction * track.n * track.dt < MIN_TRACKED_S) return empty('noPerson');
   // Without the hips in view there is no body scale to measure against, and the legs
   // are certainly out of the picture too.
   if (track.hipsSeen < 0.5 || !(track.torso > 0) || !(track.bodyH > 0)) return empty('legsCut');
@@ -188,11 +197,17 @@ export function analyzeClip(raw, opts = {}) {
   if (shots.some((s) => s.jump === null)) warn('feetCut');
   if (shots.some((s) => s.handsCut)) warn('handsCut');
   if (track.view.kind === 'side' && track.view.nearSide && track.view.nearSide !== hand && shots.length) warn('offHandSide');
-  // Slow-motion video stretches everything: implausibly long flights, or a push that
-  // takes several times longer than an arm can take.
+  // Slow-motion video stretches everything: implausibly long flights, a push that takes
+  // several times longer than an arm can take, or a body that falls too gently.
   const flights = shots.filter((s) => s.jump === true).map((s) => s.flight);
   const pushes = shots.map((s) => s.t.full - s.t.set).filter(Number.isFinite);
-  if ((flights.length && median(flights) > 0.75) || shots.some((s) => Number.isFinite(s.longAir)) || (pushes.length && median(pushes) > 0.5)) warn('slowMotion');
+  const pulls = shots.map((s) => s.gravity).filter(Number.isFinite);
+  if (
+    (flights.length && median(flights) > 0.75) ||
+    shots.some((s) => Number.isFinite(s.longAir)) ||
+    (pushes.length && median(pushes) > 0.5) ||
+    (pulls.length && median(pulls) < SLOW_MOTION_GRAVITY)
+  ) warn('slowMotion');
   if (!shots.length) {
     // Nothing moved like a shot at normal speed. If the same motions are there at a
     // fraction of the speed, the recording is slow motion.
@@ -202,8 +217,14 @@ export function analyzeClip(raw, opts = {}) {
     warn('noShots');
   }
 
+  const slow = warnings.some((w) => w.code === 'slowMotion');
   for (const s of shots) {
     s.metrics = measureShot(track, s, shotOpts);
+    // Positions and angles are the same at any playback speed; times are not.
+    if (slow) {
+      for (const id of SPEED_METRICS) delete s.metrics[id];
+      s.slow = true;
+    }
     s.view = track.view.kind;
     if (s.quality.bridgedFraction > 0.2) s.lowQuality = true;
   }

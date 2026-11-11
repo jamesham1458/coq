@@ -57,6 +57,10 @@ export const DETECT = Object.freeze({
   openBackoff3d: 0.84,
   /** the arm is "waiting" at the set point while the wrist stays within this radius (torso lengths) */
   pauseRadius: 0.09,
+  /** the same away from the side view, where the wrist wanders more in the picture while it waits */
+  pauseRadius3d: 0.13,
+  /** the wider radius takes in the last of the arm's arrival; this much (seconds) is taken back off */
+  pauseAllowance3d: 0.06,
   /** the follow-through has ended once the elbow has closed this far from full extension (degrees) */
   followDropDeg: 30,
   /** longest follow-through that is measured (seconds); longer holds are reported as "at least" */
@@ -200,6 +204,10 @@ function buildShot(track, hand, anchor, opts) {
   const handsCut = track.okFraction([S.wrist], iRel, Math.min(n - 1, iFull + sec(0.15))) < 0.7;
   const armSeenAtSet = track.okFraction([S.shoulder, S.elbow, S.wrist], iSet - 1, iSet + 1) >= 0.6;
 
+  // Body size where this shot was taken. A shooter who walks toward or away from the
+  // camera between shots is a different size in the picture each time.
+  const local = track.scaleIn(Math.floor(iSet) - sec(1.2), Math.ceil(iFull) + sec(0.6));
+
   // 5. How long the arm waited at the set point before extending: how far back the wrist
   //    (relative to the shoulder) stays within a small radius of where it was at the set
   //    point, with the elbow still near its set-point angle. One stray frame is forgiven.
@@ -208,51 +216,84 @@ function buildShot(track, hand, anchor, opts) {
   const k0 = clamp(Math.round(iSet), 0, n - 1);
   const x0 = relX(k0);
   const y0 = relY(k0);
-  const radius = DETECT.pauseRadius * track.torso;
-  const waiting = (i) => Math.hypot(relX(i) - x0, relY(i) - y0) < radius && Math.abs(el[i] - thetaSet) < 12;
+  // Away from the side view the arm moves partly toward or away from the camera, so the
+  // wrist's position in the picture wanders more while it waits; the radius is wider and
+  // the elbow-angle condition is dropped (the 3D angle is too jittery to hold still
+  // within a few degrees).
+  const radius = (track.planar ? DETECT.pauseRadius : DETECT.pauseRadius3d) * local.torso;
+  const waiting = (i) => Math.hypot(relX(i) - x0, relY(i) - y0) < radius && (!track.planar || Math.abs(el[i] - thetaSet) < 12);
   let ia = k0;
   const pauseBack = Math.max(0, k0 - sec(1.2));
-  while (ia > pauseBack && (waiting(ia - 1) || (ia - 2 >= pauseBack && waiting(ia - 2)))) ia--;
+  const forgive = Math.max(1, sec(0.07));
+  let strays = 0;
+  for (let i = k0 - 1; i >= pauseBack; i--) {
+    if (waiting(i)) {
+      ia = i;
+      strays = 0;
+    } else if (++strays > forgive) break;
+  }
   const iArrive = Math.min(iSet, ia);
 
   // 6. Dip: deepest knee bend before the release. In a side view the near leg is the one seen clearly.
   const near = track.view.kind === 'side' && track.view.nearSide ? track.view.nearSide : null;
-  const knee = near ? track.knee(near) : track.knees();
   const dipLo = Math.max(0, Math.floor(iSet) - sec(0.9));
+  // The legs load before the arm pushes, so the dip cannot come after the set point.
+  // Stopping the search there keeps a leg tuck in the air from being taken for the dip.
+  const dipHi = Math.min(Math.floor(iRel), Math.floor(iSet) + sec(0.08));
   const legPoints = (side) => {
     const L = sideOf(side);
     return [L.hip, L.knee, L.ankle];
   };
-  const kneeLm = near ? legPoints(near) : [...legPoints('left'), ...legPoints('right')];
-  const kneesSeen = track.okFraction(kneeLm, dipLo, iRel) >= 0.7;
-  const iDip = kneesSeen ? argMin(knee, dipLo, Math.floor(iRel)) : -1;
-  const dipKnee = iDip >= 0 ? knee[iDip] : NaN;
+  // Use whichever legs are in view (the far leg is often hidden from the side).
+  const seenLegs = ['left', 'right'].filter((side) => track.okFraction(legPoints(side), dipLo, dipHi) >= 0.7);
+  const dipLegs = near && seenLegs.includes(near) ? [near] : seenLegs;
+  const knee = dipLegs.length === 2 ? track.knees() : dipLegs.length === 1 ? track.knee(dipLegs[0]) : null;
+  let iDip = knee ? argMin(knee, dipLo, dipHi) : -1;
+  // A minimum on the first frame searched means the knees were more bent still before it
+  // (a slow load, or slow-motion video): follow the bend back to where it was deepest.
+  const dipFloor = Math.max(0, Math.floor(iSet) - sec(3.5));
+  let searched = dipLo;
+  while (iDip >= 0 && iDip === searched && searched > dipFloor) {
+    const from = Math.max(dipFloor, searched - sec(0.3));
+    const k = argMin(knee, from, searched);
+    if (k < 0 || !(knee[k] < knee[iDip])) break;
+    iDip = k;
+    searched = from;
+  }
+  // Still on the first frame there is: the dip began before the recording (or the search) did.
+  const dipAtEdge = iDip >= 0 && iDip === searched && (searched === 0 || searched === dipFloor);
+  const dipSeen = iDip >= 0 && dipLegs.every((side) => track.ok(legPoints(side), iDip));
+  const dipKnee = dipSeen && !dipAtEdge ? knee[iDip] : NaN;
   const iDipRef = iDip >= 0 ? refineExtremum(knee, iDip) : NaN;
-  // A minimum sitting on the first frame of the clip means the dip started before the recording did.
-  const dipAtEdge = iDip >= 0 && iDip === 0;
 
   // 7. Take-off and landing from the feet. Each foot point is compared with its own
   //    planted level, so a raised heel with the toe still down does not count as airborne
   //    and perspective (toe and heel at different depths) does not matter.
-  const footPts = [LM.L_HEEL, LM.L_TOE, LM.R_HEEL, LM.R_TOE];
   const plantMid = iDip >= 0 ? iDip : Math.floor(iSet);
   // The planted level of each foot point is where it sat lowest in the picture between
   // the dip and the release. A high quantile (not the median) keeps a step into the
   // shot, or the first airborne frames, from raising the level.
   const plantA = Math.max(0, plantMid - sec(0.2));
   const plantB = Math.min(n - 1, Math.max(plantMid + sec(0.05), Math.floor(iRel)));
-  const bases = footPts.map((j) => quantile(Array.from(track.py[j].subarray(plantA, plantB + 1)), 0.85));
   const airStart = Math.max(0, plantMid);
   const airEnd = Math.min(n - 1, Math.ceil(iRel) + sec(1.4));
+  // Use whichever feet are in view; one is enough. `jump` is true or false when a foot
+  // is in view, and null when neither is (nothing about the jump is then reported).
+  const footPts = [[LM.L_HEEL, LM.L_TOE], [LM.R_HEEL, LM.R_TOE]]
+    .filter((pts) => track.okFraction(pts, plantA, Math.min(airEnd, Math.ceil(iRel) + sec(0.8))) >= 0.75)
+    .flat();
+  const feetSeen = footPts.length > 0;
+  const bases = footPts.map((j) => quantile(Array.from(track.py[j].subarray(plantA, plantB + 1)), 0.85));
   const lift = new Float64Array(n);
-  for (let i = airStart; i <= airEnd; i++) {
+  for (let i = airStart; i <= airEnd && feetSeen; i++) {
     let m = Infinity;
     for (let k = 0; k < footPts.length; k++) m = Math.min(m, bases[k] - track.py[footPts[k]][i]);
-    lift[i] = m / track.bodyH;
+    lift[i] = m / local.bodyH;
   }
-  // `jump` is true or false when the feet are in view, and null when they are not (in
-  // which case nothing about the jump is reported rather than guessed).
-  const feetSeen = track.okFraction(footPts, plantA, Math.min(airEnd, Math.ceil(iRel) + sec(0.8))) >= 0.75;
+  // Hip height from whichever hips are in view.
+  const hipSides = [LM.L_HIP, LM.R_HIP].filter((j) => track.okFraction([j], plantMid, Math.min(n - 1, Math.ceil(iRel) + sec(0.5))) >= 0.7);
+  const hipY = hipSides.length === 2 ? track.mid(LM.L_HIP, LM.R_HIP).y : hipSides.length === 1 ? track.py[hipSides[0]] : null;
+  let gravity = NaN;
   let jump = feetSeen ? false : null;
   let iTO = NaN;
   let iLand = NaN;
@@ -285,6 +326,8 @@ function buildShot(track, hand, anchor, opts) {
         down = byStop;
         landingByStop = true;
       }
+      // Up, and still not down by the end of the window: far too long in the air to be real.
+      if (!Number.isFinite(down) && (airEnd - cross) / fps > DETECT.maxFlightS) longAir = (airEnd - cross) / fps;
       if (Number.isFinite(down)) {
         const raw = (down - cross) / fps;
         // Far too long in the air to be real: almost certainly slow-motion video.
@@ -299,9 +342,11 @@ function buildShot(track, hand, anchor, opts) {
           let T = raw;
           for (let k = 0; k < 3; k++) T = raw + (ends * hidden) / Math.max(0.5, (G * T) / 2);
           flight = T;
-          const hip = track.mid(LM.L_HIP, LM.R_HIP).y;
-          const fit = fitParabola(hip, Math.ceil(cross), Math.floor(down));
+          const fit = hipY ? fitParabola(hipY, Math.ceil(cross), Math.floor(down)) : null;
           const midpoint = (cross + down) / 2;
+          // How hard the body is pulled back down, in real units. Real video gives about
+          // 9.8 m/s^2; slow motion gives a fraction of it, whatever the size of the jump.
+          if (fit && fit.curvature > 0 && down - cross >= 6) gravity = 2 * fit.curvature * fps * fps * ((opts.heightM || 1.78) / local.bodyH);
           // Image y grows downward, so a body rising and falling traces a parabola that opens upward.
           iApex = fit && fit.curvature > 0 && fit.vertex > cross && fit.vertex < down && Math.abs(fit.vertex - midpoint) < 0.1 * fps
             ? fit.vertex
@@ -310,23 +355,32 @@ function buildShot(track, hand, anchor, opts) {
       }
     }
   }
-  if (jump === false && track.okFraction([LM.L_HIP, LM.R_HIP], plantMid, iRel) >= 0.7) {
+  if (jump === false && hipY) {
     // No flight: use the top of the body's rise as the reference moment.
-    const hip = track.mid(LM.L_HIP, LM.R_HIP).y;
     const a = Math.max(0, plantMid);
     const b = Math.min(n - 1, Math.ceil(iRel) + sec(0.4));
-    const k = argMin(hip, a, b);
-    iApex = k >= 0 ? refineExtremum(hip, k) : NaN;
+    const k = argMin(hipY, a, b);
+    iApex = k >= 0 ? refineExtremum(hipY, k) : NaN;
   }
 
   // 8. End of the follow-through.
   const eyes = track.wristAboveEyes(hand);
-  const windowEnd = Math.max(Math.ceil(iFull), Math.min(n - 1, Math.ceil(iRel) + sec(DETECT.followWindowS), opts.until ?? n - 1));
+  const windowEnd = Math.max(Math.ceil(iFull), Math.min(n - 1, Math.ceil(iRel) + sec(DETECT.followWindowS)));
   const dropLevel = thetaMax - DETECT.followDropDeg;
   const start = Math.ceil(iFull);
   const byElbow = firstDownCrossing(el, dropLevel, start, windowEnd);
-  const byHeight = firstDownCrossing(eyes, 0, start, windowEnd);
-  let iFollowEnd = Math.min(Number.isFinite(byElbow) ? byElbow : Infinity, Number.isFinite(byHeight) ? byHeight : Infinity);
+  // The hand dropping below eye level also ends it, but only if it was above eye level to
+  // begin with (a flat release seen from behind can sit below the eye line throughout).
+  const EYES = [LM.L_EYE, LM.R_EYE];
+  let byHeight = track.any(EYES, start) && eyes[Math.min(n - 1, start)] > 0 ? firstDownCrossing(eyes, 0, start, windowEnd) : NaN;
+  // A crossing where neither eye is in view is a guess about where the eye line is.
+  if (Number.isFinite(byHeight) && !track.any(EYES, byHeight)) byHeight = NaN;
+  // Without a usable eye line, a straight arm being lowered is caught by the wrist losing
+  // half its height above the shoulder.
+  const eyeLine = track.any(EYES, start) && eyes[Math.min(n - 1, start)] > 0;
+  const upAtFull = up[Math.min(n - 1, start)];
+  const byDrop = !eyeLine && upAtFull > 0 ? firstDownCrossing(up, 0.5 * upAtFull, start, windowEnd) : NaN;
+  let iFollowEnd = Math.min(...[byElbow, byHeight, byDrop].map((v) => (Number.isFinite(v) ? v : Infinity)));
   let followCapped = false;
   if (!Number.isFinite(iFollowEnd)) {
     iFollowEnd = windowEnd;
@@ -370,8 +424,13 @@ function buildShot(track, hand, anchor, opts) {
     landingByStop,
     /** apparent time in the air when it was too long to be a real jump (seconds), else NaN */
     longAir,
+    /** apparent downward acceleration during the flight, m/s^2 (about 9.8 in real-speed video) */
+    gravity,
+    /** body size in pixels where this shot was taken */
+    bodyH: local.bodyH,
+    torso: local.torso,
     followCapped,
-    setPause: Math.max(0, (iSet - iArrive) / fps),
+    setPause: Math.max(0, (iSet - iArrive) / fps - (track.planar ? 0 : DETECT.pauseAllowance3d)),
     thetaSet,
     thetaMax,
     dipKnee,

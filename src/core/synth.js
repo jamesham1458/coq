@@ -27,6 +27,7 @@ export const DEFAULT_SHOOTER = Object.freeze({
   followHold: 0.6, // time the arm stays extended after release
   // Legs and trunk (degrees)
   kneeFlexDip: 62, // knee flexion at the deepest point (knee angle = 180 - this)
+  tuck: 14, // knee flexion at the top of the jump (legs tucked in the air)
   trunkLeanDip: 16, // forward lean at the dip
   trunkLeanRelease: 3, // forward lean at release (negative leans back)
   sideLean: 0, // lean toward the shooting side at release
@@ -148,7 +149,7 @@ function pose(p, tl, t) {
   const jump = tl.flight > 0;
   const kneeFlex = curve(
     jump
-      ? [[0, 8], [tl.tDipStart, 8], [tl.tDip, p.kneeFlexDip], [tl.tTakeoff, 3], [tl.tApex, 14], [tl.tLanding, 3], [tl.tLanding + 0.16, 42], [tl.tLanding + 0.65, 9]]
+      ? [[0, 8], [tl.tDipStart, 8], [tl.tDip, p.kneeFlexDip], [tl.tTakeoff, 3], [tl.tApex, p.tuck], [tl.tLanding, 3], [tl.tLanding + 0.16, 42], [tl.tLanding + 0.65, 9]]
       : [[0, 8], [tl.tDipStart, 8], [tl.tDip, p.kneeFlexDip], [tl.tTakeoff, 3], [tl.tTakeoff + 0.4, 9]],
   )(t);
   const heel = curve(

@@ -52,6 +52,14 @@ export function measureShot(track, shot, opts = {}) {
     if (Number.isFinite(value)) out[id] = note ? { value, conf, note } : { value, conf };
   };
 
+  // Body size where this shot was taken (the shooter may be nearer or farther than in other shots).
+  const bodyH = shot.bodyH > 0 ? shot.bodyH : track.bodyH;
+  const torso = shot.torso > 0 ? shot.torso : track.torso;
+  // Body sides whose listed landmarks are in view at every given moment. From the side
+  // the far shoulder, hip or ankle is often hidden, and one side is enough.
+  const sidesWith = (pick, ...at) => ['left', 'right'].filter((sd) => at.every((k) => track.ok(pick(sideOf(sd)), k)));
+  const avg = (arr, pts, at) => pts.reduce((sum, j) => sum + sampleAt(arr[j], at), 0) / pts.length;
+
   // Confidence of sagittal-plane readings: best from the shooting-hand side.
   const nearShooting = side && track.view.nearSide === hand;
   const armConf = side ? (nearShooting ? 'high' : 'medium') : 'medium';
@@ -81,15 +89,22 @@ export function measureShot(track, shot, opts = {}) {
   const reachEnd = Math.min(n - 1, Math.round(i.full + 0.25 * fps));
   if (side || !track.hasWorld || !(track.torsoM > 0)) {
     const eyes = track.wristAboveEyes(hand);
+    // That series is in body heights typical for the clip; restate it in this shot's.
+    const local = track.bodyH / bodyH;
     const conf = side ? 'high' : 'low';
-    if (shot.armSeenAtSet && track.ok(EYES, i.set)) put('setHeight', sampleAt(eyes, i.set), conf);
+    if (shot.armSeenAtSet && track.any(EYES, i.set)) put('setHeight', sampleAt(eyes, i.set) * local, conf);
     const iReach = argMax(eyes, Math.floor(i.release), reachEnd);
-    if (armUp && iReach >= 0 && track.ok([S.wrist, ...EYES], iReach)) put('reachHeight', eyes[iReach], conf);
+    if (armUp && iReach >= 0 && track.ok([S.wrist], iReach) && track.any(EYES, iReach)) put('reachHeight', eyes[iReach] * local, conf);
   } else {
     const bodyM = track.torsoM / TORSO_TO_HEIGHT;
-    const above = (k) => (((track.wy[LM.L_EYE][k] + track.wy[LM.R_EYE][k]) / 2 - track.wy[S.wrist][k]) / bodyM) * 100;
+    const eyeY = (k) => {
+      const l = track.seen[LM.L_EYE][k];
+      const r = track.seen[LM.R_EYE][k];
+      return l && !r ? track.wy[LM.L_EYE][k] : r && !l ? track.wy[LM.R_EYE][k] : (track.wy[LM.L_EYE][k] + track.wy[LM.R_EYE][k]) / 2;
+    };
+    const above = (k) => ((eyeY(k) - track.wy[S.wrist][k]) / bodyM) * 100;
     const kSet = clamp(Math.round(i.set), 0, n - 1);
-    if (shot.armSeenAtSet && track.ok(EYES, i.set)) put('setHeight', above(kSet), 'medium');
+    if (shot.armSeenAtSet && track.any(EYES, i.set)) put('setHeight', above(kSet), 'medium');
     let best = -Infinity;
     let kBest = -1;
     for (let k = Math.max(0, Math.floor(i.release)); k <= reachEnd; k++) {
@@ -99,7 +114,7 @@ export function measureShot(track, shot, opts = {}) {
         kBest = k;
       }
     }
-    if (armUp && kBest >= 0 && track.ok([S.wrist, ...EYES], kBest)) put('reachHeight', best, 'medium');
+    if (armUp && kBest >= 0 && track.ok([S.wrist], kBest) && track.any(EYES, kBest)) put('reachHeight', best, 'medium');
   }
 
   // ---- Arm angle at full extension ------------------------------------------------------
@@ -119,19 +134,26 @@ export function measureShot(track, shot, opts = {}) {
   // ---- Side view: lean and drift along the line of the shot ---------------------------
   const sh = track.mid(LM.L_SHOULDER, LM.R_SHOULDER);
   const hip = track.mid(LM.L_HIP, LM.R_HIP);
-  const ank = track.mid(LM.L_ANKLE, LM.R_ANKLE);
   const TRUNK = [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP];
-  const ANKLES = [LM.L_ANKLE, LM.R_ANKLE];
   const trunkSeen = track.ok(TRUNK, i.release);
-  const landingSeen = shot.jump === true && track.ok(ANKLES, i.takeoff) && track.ok(ANKLES, i.landing);
+  // Ankles in view at both ends of the flight. Travel is the same whichever is used.
+  const ankles = shot.jump === true ? sidesWith((L) => [L.ankle], i.takeoff, i.landing).map((sd) => sideOf(sd).ankle) : [];
+  const landingSeen = ankles.length > 0;
+  const travel = landingSeen ? avg(track.px, ankles, i.landing) - avg(track.px, ankles, i.takeoff) : NaN;
   if (side) {
     const facing = track.view.facing || 1;
-    const lean = tiltFromUp(sampleAt(sh.x, i.release) - sampleAt(hip.x, i.release), sampleAt(sh.y, i.release) - sampleAt(hip.y, i.release));
-    if (trunkSeen) put('trunkLean', lean * facing, 'high');
-    if (landingSeen) {
-      const dx = sampleAt(ank.x, i.landing) - sampleAt(ank.x, i.takeoff);
-      put('driftForward', ((dx * facing) / track.bodyH) * 100, 'high');
+    // One side's shoulder and hip give the line of the trunk; with both in view the
+    // middle of each pair is used, which a camera a little off square does not skew.
+    const trunk = sidesWith((L) => [L.shoulder, L.hip], i.release);
+    if (trunk.length) {
+      const tops = trunk.map((sd) => sideOf(sd).shoulder);
+      const bottoms = trunk.map((sd) => sideOf(sd).hip);
+      const lean = tiltFromUp(avg(track.px, tops, i.release) - avg(track.px, bottoms, i.release), avg(track.py, tops, i.release) - avg(track.py, bottoms, i.release));
+      // A stance turned toward the basket puts one shoulder ahead of its hip, so a single
+      // side reads a few degrees off: a rough reading only.
+      put('trunkLean', lean * facing, trunk.length === 2 ? 'high' : 'low');
     }
+    if (landingSeen) put('driftForward', ((travel * facing) / bodyH) * 100, ankles.length === 2 ? 'high' : 'medium');
   }
 
   // ---- Front or back view: everything across the body -------------------------------------
@@ -193,14 +215,14 @@ export function measureShot(track, shot, opts = {}) {
       const wx = windowMedian(track.px[S.wrist], sa, i.set);
       const wy = windowMedian(track.py[S.wrist], sa, i.set);
       const foreLen = Math.hypot(wx - ex, wy - ey);
-      if (shot.armSeenAtSet && foreLen > 0.12 * track.torso && wy < ey) {
+      if (shot.armSeenAtSet && foreLen > 0.12 * torso && wy < ey) {
         put('elbowFlare', -tiltFromUp(wx - ex, wy - ey) * out1, 'low');
       }
       const headX = (at) => (sampleAt(track.px[LM.L_EAR], at) + sampleAt(track.px[LM.R_EAR], at)) / 2;
       const line = (at) => {
         const hx = headX(at);
         const span = sampleAt(track.px[S.shoulder], at) - hx;
-        return Math.abs(span) > 0.05 * track.torso ? (sampleAt(track.px[S.wrist], at) - hx) / span : NaN;
+        return Math.abs(span) > 0.05 * torso ? (sampleAt(track.px[S.wrist], at) - hx) / span : NaN;
       };
       if (shot.armSeenAtSet && track.ok(EARS, i.set)) put('setLine', line(i.set), 'low');
       if (armUp && track.ok([S.wrist, S.shoulder, ...EARS], iFinish)) put('finishLine', line(iFinish), 'low');
@@ -211,20 +233,19 @@ export function measureShot(track, shot, opts = {}) {
     // Travel in the air can only be read from the picture, where a camera off the shot
     // line mixes forward travel into it. Past a small angle it is only a rough reading.
     if (landingSeen) {
-      const dx = sampleAt(ank.x, i.landing) - sampleAt(ank.x, i.takeoff);
-      put('driftSide', ((dx * out1) / track.bodyH) * 100, offAxis <= OFF_AXIS_OK_DEG ? 'high' : 'low');
+      put('driftSide', ((travel * out1) / bodyH) * 100, offAxis > OFF_AXIS_OK_DEG ? 'low' : ankles.length === 2 ? 'high' : 'medium');
     }
     if (Number.isFinite(i.dip) && track.ok([LM.L_ANKLE, LM.R_ANKLE, LM.L_KNEE, LM.R_KNEE, LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP], i.dip)) {
       const at = i.dip;
       const sep = (a0, b0) => Math.abs(sampleAt(track.px[a0], at) - sampleAt(track.px[b0], at));
-      const ankles = sep(LM.L_ANKLE, LM.R_ANKLE);
+      const feet = sep(LM.L_ANKLE, LM.R_ANKLE);
       const knees = sep(LM.L_KNEE, LM.R_KNEE);
       const hips = sep(LM.L_HIP, LM.R_HIP);
       const shoulders = sep(LM.L_SHOULDER, LM.R_SHOULDER);
-      if (shoulders > 0.2 * track.torso) put('stanceWidth', ankles / shoulders, 'medium');
+      if (shoulders > 0.2 * torso) put('stanceWidth', feet / shoulders, 'medium');
       // Knees that track straight sit on the line from hip to ankle, about halfway along it.
-      const neutral = (hips + ankles) / 2;
-      if (neutral > 0.1 * track.torso) put('kneeTrack', knees / neutral, 'medium');
+      const neutral = (hips + feet) / 2;
+      if (neutral > 0.1 * torso) put('kneeTrack', knees / neutral, 'medium');
     }
   }
 

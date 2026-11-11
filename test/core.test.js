@@ -559,3 +559,135 @@ test('heights agree between camera angles', () => {
     assert.equal(r.conf, 'medium');
   }
 });
+
+// ---- Detection when the recording is less than ideal ---------------------------------------
+
+/** Clip `b` appended to clip `a`, as one continuous recording. */
+function join(a, b) {
+  const off = a.frames[a.frames.length - 1].t + 1 / a.fps;
+  return { ...a, frames: [...a.frames, ...b.frames.map((f) => ({ ...f, t: f.t + off }))] };
+}
+
+test('a shot taken farther from the camera is measured against the size of the shooter there', () => {
+  for (const cam of [SIDE, FRONT]) {
+    const far = synthClip([{}], { ...cam, distM: 9 }, { ...NOISY, seed: 3 });
+    const alone = analyzeClip(far, { hand: 'right', heightM: 1.8 }).shots[0];
+    const mixed = analyzeClip(join(synthClip([{}, {}, {}], cam, NOISY), far), { hand: 'right', heightM: 1.8 });
+    assert.equal(mixed.shots.length, 4, 'the small, distant shot is still found');
+    const s = mixed.shots[3];
+    assert.equal(s.jump, true);
+    for (const id of ['setHeight', 'reachHeight', 'jumpHeight', cam === SIDE ? 'driftForward' : 'driftSide']) {
+      near(s.metrics[id].value, alone.metrics[id].value, 1, `${id} matches the same shot filmed on its own`);
+    }
+  }
+});
+
+test('legs tucked in the air are not mistaken for the dip', () => {
+  const { clip, res } = analyse([{ tuck: 78, kneeFlexDip: 55 }], SIDE);
+  near(res.shots[0].metrics.kneeBend.value, 125, 5, 'knee bend is read at the dip');
+  near(res.shots[0].t.dip, clip.truth[0].tDip, 0.07, 'dip time');
+});
+
+test('a dip that began before the recording did is not reported', () => {
+  const clip = synthClip([{ riseDur: 0.32 }], SIDE, NOISY);
+  const from = clip.truth[0].tDip + 0.04;
+  clip.frames = clip.frames.filter((f) => f.t >= from);
+  const res = analyzeClip(clip, { hand: 'right' });
+  assert.equal(res.shots.length, 1);
+  assert.ok(!('kneeBend' in res.shots[0].metrics) && !('tempo' in res.shots[0].metrics));
+  assert.ok('setElbow' in res.shots[0].metrics);
+});
+
+test('half-speed video of a small hop is caught by how slowly the shooter falls', () => {
+  // Flight time and push both stay believable at half speed; only gravity gives it away.
+  const hop = Array(3).fill({ flight: 0.3, extDur: 0.14 });
+  const slow = synthClip(hop, SIDE, { ...NOISY, fps: 60 });
+  slow.frames.forEach((f) => {
+    f.t *= 2;
+  });
+  const res = analyzeClip(slow, { hand: 'right', heightM: 1.8 });
+  assert.equal(res.shots.length, 3);
+  assert.ok(res.shots.every((s) => s.flight < 0.75 && s.t.full - s.t.set < 0.5), 'nothing else looks slow');
+  assert.ok(res.warnings.some((w) => w.code === 'slowMotion'), JSON.stringify(res.warnings));
+  for (const cam of [SIDE, FRONT, BACK]) {
+    for (const flight of [0.3, 0.44, 0.55]) {
+      const real = analyse(Array(3).fill({ flight }), cam).res;
+      assert.ok(!real.warnings.some((w) => w.code === 'slowMotion'), `real speed, ${flight} s in the air, camera at ${cam.yawDeg}`);
+      for (const s of real.shots) if (Number.isFinite(s.gravity)) near(s.gravity, 9.8, 3.5, 'apparent gravity at real speed');
+    }
+  }
+});
+
+test('a shooter who is out of the picture for most of the clip is still analysed', () => {
+  const clip = synthClip([{}, {}], SIDE, NOISY);
+  const last = clip.frames[clip.frames.length - 1].t;
+  for (let k = 1; k <= 600; k++) clip.frames.push({ t: last + k / 30, lm: null, world: null });
+  const res = analyzeClip(clip, { hand: 'right' });
+  assert.ok(res.info.detectedFraction < 0.3);
+  assert.equal(res.shots.length, 2);
+  assert.ok(!res.warnings.some((w) => w.code === 'noPerson'));
+  const brief = synthClip([{}], SIDE, NOISY);
+  brief.frames = brief.frames.slice(0, 20);
+  assert.ok(analyzeClip(brief, { hand: 'right' }).warnings.some((w) => w.code === 'tooShort'));
+});
+
+test('from the side, the far half of the body can be hidden without losing the legs or the jump', () => {
+  const full = analyzeClip(synthClip([{}, {}], SIDE, NOISY), { hand: 'right', heightM: 1.8 });
+  const clip = synthClip([{}, {}], SIDE, NOISY);
+  const rng = makeRng(5);
+  // Left shoulder, hip, knee, ankle, heel, toe, eye and ear: unseen, and placed by guesswork.
+  for (const f of clip.frames) {
+    for (const j of [11, 23, 25, 27, 29, 31, 2, 7]) {
+      f.lm[j].visibility = 0.05;
+      f.lm[j].x += rng.normal() * 0.05;
+      f.lm[j].y += rng.normal() * 0.05;
+    }
+  }
+  const res = analyzeClip(clip, { hand: 'right', heightM: 1.8 });
+  assert.equal(res.shots.length, 2);
+  res.shots.forEach((s, k) => {
+    const ref = full.shots[k].metrics;
+    assert.equal(s.jump, true);
+    near(s.metrics.kneeBend.value, ref.kneeBend.value, 3, 'knee bend from the near leg');
+    near(s.metrics.jumpHeight.value, ref.jumpHeight.value, 3, 'jump from the near foot');
+    near(s.metrics.driftForward.value, ref.driftForward.value, 1.5, 'drift from the near ankle');
+    near(s.metrics.reachHeight.value, ref.reachHeight.value, 1.5, 'height against the near eye');
+    near(s.metrics.followHold.value, ref.followHold.value, 0.1, 'follow-through');
+    assert.equal(s.metrics.trunkLean.conf, 'low', 'lean from one side of the trunk is only a rough reading');
+  });
+});
+
+test('a hand that finishes below the eye line still has its follow-through measured', () => {
+  const clip = synthClip([{ followHold: 0.8 }], BACK, NOISY);
+  // Put the eye line above the extended hand, as a low, close camera behind a flat release does.
+  for (const f of clip.frames) for (const j of [2, 5]) f.lm[j].y -= 0.08;
+  const res = analyzeClip(clip, { hand: 'right', heightM: 1.8 });
+  assert.equal(res.shots.length, 1);
+  assert.ok(res.track.wristAboveEyes('right')[Math.ceil(res.shots[0].i.full)] < 0, 'the hand is below the eye line at full extension');
+  near(res.shots[0].metrics.followHold.value, 0.8, 0.15, 'follow-through timed from the elbow');
+});
+
+test('a hitch at the set point is also read from the front and from behind', () => {
+  const pauses = (setPause, cam) => analyse(Array(4).fill({ setPause }), cam).res.shots.map((s) => s.metrics.setPause.value);
+  for (const cam of [FRONT, BACK]) {
+    assert.ok(quantile(pauses(0.03, cam), 0.5) < 130, 'no hitch reads as a short pause');
+    near(quantile(pauses(0.35, cam), 0.5), 350, 60, 'a 350 ms hitch');
+  }
+});
+
+test('slow-motion video keeps its angles and loses its times', () => {
+  const clip = synthClip([{}, {}], SIDE, { ...NOISY, fps: 60 });
+  clip.frames.forEach((f) => {
+    f.t *= 4;
+  });
+  const res = analyzeClip(clip, { hand: 'right', heightM: 1.8 });
+  assert.equal(res.shots.length, 2);
+  for (const s of res.shots) {
+    for (const id of ['tempo', 'setPause', 'releaseVsApex', 'followHold', 'jumpHeight']) assert.ok(!(id in s.metrics), `${id} must be withheld`);
+    near(s.metrics.setElbow.value, 80, 8, 'set-point elbow');
+    near(s.metrics.kneeBend.value, 118, 8, 'knee bend');
+  }
+  const a = assessSession(res.shots.map((s) => toShotRecord(s, 0)));
+  assert.equal(a.missing.find((m) => m.id === 'tempo').reason, 'slow');
+  assert.ok(Number.isFinite(a.scores.form));
+});

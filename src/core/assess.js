@@ -10,6 +10,8 @@ const CONF_RANK = { high: 3, medium: 2, low: 1 };
 
 /** Measurements that exist only when the shooter leaves the floor with the feet in view. */
 const JUMP_METRICS = ['jumpHeight', 'driftForward', 'driftSide', 'releaseVsApex'];
+/** Measurements that are only right at real speed (kept in step with analyze.js). */
+const SPEED_METRICS = ['tempo', 'setPause', 'releaseVsApex', 'followHold', 'jumpHeight'];
 
 /**
  * Judge one value against a metric's ranges.
@@ -137,7 +139,8 @@ export function assessSession(shots, ctx = {}) {
     }
     if (!rows.length) {
       const inView = shots.some((s) => groups.flat().includes(s.view));
-      missing.push({ id: spec.id, needs: groups[0], reason: !inView ? 'view' : JUMP_METRICS.includes(spec.id) ? 'jump' : 'unseen' });
+      const slow = SPEED_METRICS.includes(spec.id) && shots.some((s) => s.slow);
+      missing.push({ id: spec.id, needs: groups[0], reason: !inView ? 'view' : slow ? 'slow' : JUMP_METRICS.includes(spec.id) ? 'jump' : 'unseen' });
       continue;
     }
     const values = rows.map((s) => s.metrics[spec.id].value);
@@ -292,7 +295,10 @@ export function toShotRecord(shot, clipIndex) {
   for (const [id, m] of Object.entries(shot.metrics)) {
     metrics[id] = m.note ? { value: round(m.value), conf: m.conf, note: m.note } : { value: round(m.value), conf: m.conf };
   }
-  return { clip: clipIndex, view: shot.view, t: round(shot.t.release), jump: shot.jump === true ? true : shot.jump === false ? false : null, made: shot.made ?? null, metrics };
+  const rec = { clip: clipIndex, view: shot.view, t: round(shot.t.release), jump: shot.jump === true ? true : shot.jump === false ? false : null, made: shot.made ?? null, metrics };
+  // Slow-motion video: timing and jump measurements were withheld for this shot.
+  if (shot.slow) rec.slow = true;
+  return rec;
 }
 
 function round(v) {

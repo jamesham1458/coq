@@ -43,12 +43,16 @@ export class Track {
     for (let i = 0; i < nRaw; i++) times[i] = frames[i].t;
     const steps = [];
     for (let i = 1; i < nRaw; i++) steps.push(times[i] - times[i - 1]);
-    const dt = steps.length ? median(steps) : 1 / 30;
+    const typical = steps.length ? median(steps) : 1 / 30;
+    const uniform = steps.length > 0 && typical > 1e-6 && steps.every((s) => Math.abs(s - typical) < 0.2 * typical);
+    // On an even time base use the mean step, so frame i sits at its true time. (The
+    // median of millisecond-rounded steps is off by up to 1%, which is tenths of a
+    // second by the end of a long clip.) An uneven one is resampled at the typical step.
+    const dt = uniform ? (times[nRaw - 1] - times[0]) / (nRaw - 1) : typical;
     this.dt = dt > 1e-6 ? dt : 1 / 30;
     this.fps = 1 / this.dt;
-    const uniform = steps.every((s) => Math.abs(s - this.dt) < 0.2 * this.dt);
     this.t0 = nRaw ? times[0] : 0;
-    this.n = uniform ? nRaw : Math.max(0, Math.floor((times[nRaw - 1] - this.t0) / this.dt) + 1);
+    this.n = uniform || nRaw === 0 ? nRaw : Math.max(1, Math.floor((times[nRaw - 1] - this.t0) / this.dt) + 1);
     const n = this.n;
     this.t = new Float64Array(n);
     for (let i = 0; i < n; i++) this.t[i] = this.t0 + i * this.dt;
@@ -91,12 +95,16 @@ export class Track {
     const tmp = new Float64Array(nRaw);
     const valid = new Uint8Array(nRaw);
     const outside = new Float64Array(nRaw);
+    let anyValid = false;
     const condition = (pick) => {
       for (let i = 0; i < nRaw; i++) tmp[i] = has[i] ? pick(frames[i]) : NaN;
-      const { out, bad } = fillGaps(tmp, valid, maxGap);
+      // A point the tracker never scored visible keeps the tracker's own guesses (it is
+      // still marked unseen); bridging across nothing would park it at the picture's corner.
+      const { out, bad } = fillGaps(tmp, anyValid ? valid : has, maxGap);
       return { series: lowpass(uniform ? out : resample(times, out, this.t0, this.dt, n), cutoff, this.fps), bad };
     };
     for (let j = 0; j < N_LANDMARKS; j++) {
+      anyValid = false;
       // Two levels of trust. A point the tracker scores as visible is used to follow the
       // motion even when it has just left the picture (the tracker extrapolates a
       // partly visible limb sensibly). It only counts as SEEN, and so fit to report a
@@ -104,6 +112,7 @@ export class Track {
       for (let i = 0; i < nRaw; i++) {
         const p = has[i] ? frames[i].lm[j] : null;
         valid[i] = p && (p.visibility ?? 1) >= MIN_VISIBILITY ? 1 : 0;
+        if (valid[i]) anyValid = true;
         outside[i] = p && p.x >= -FRAME_MARGIN && p.x <= 1 + FRAME_MARGIN && p.y >= -FRAME_MARGIN && p.y <= 1 + FRAME_MARGIN ? 0 : 1;
       }
       const x = condition((f) => f.lm[j].x * this.W);
@@ -137,6 +146,14 @@ export class Track {
     return true;
   }
 
+  /** True when at least one listed landmark can be trusted at (fractional) frame index i. */
+  any(landmarks, i) {
+    if (!Number.isFinite(i)) return false;
+    const k = Math.min(this.n - 1, Math.max(0, Math.round(i)));
+    for (const j of landmarks) if (this.seen[j][k]) return true;
+    return false;
+  }
+
   /** Fraction of frames in [a, b] where every listed landmark can be trusted. */
   okFraction(landmarks, a, b) {
     const lo = Math.max(0, Math.floor(Math.min(a, b)));
@@ -153,6 +170,53 @@ export class Track {
 
   // ---- Scale ----------------------------------------------------------------------
 
+  /**
+   * Torso length and nose-to-ankle height (pixels) at frame i, from whichever side of the
+   * body is in view. In a side view the far shoulder, hip or ankle is often hidden, so
+   * one side is enough. Returns NaN for a quantity nothing in view can give.
+   */
+  #sizeAt(i) {
+    let torso = 0;
+    let sides = 0;
+    let ankle = 0;
+    let ankles = 0;
+    for (const [sh, hip, an] of [[LM.L_SHOULDER, LM.L_HIP, LM.L_ANKLE], [LM.R_SHOULDER, LM.R_HIP, LM.R_ANKLE]]) {
+      if (this.seen[sh][i] && this.seen[hip][i]) {
+        torso += Math.hypot(this.px[sh][i] - this.px[hip][i], this.py[sh][i] - this.py[hip][i]);
+        sides++;
+      }
+      if (this.seen[an][i]) {
+        ankle += this.py[an][i];
+        ankles++;
+      }
+    }
+    return {
+      torso: sides ? torso / sides : NaN,
+      stand: ankles && this.seen[LM.NOSE][i] ? ankle / ankles - this.py[LM.NOSE][i] : NaN,
+    };
+  }
+
+  /**
+   * Body scale over frames [a, b]: torso length and standing height in pixels. Used per
+   * shot, so a shooter who walks toward or away from the camera between shots is
+   * measured against their size where they actually shot.
+   */
+  scaleIn(a, b) {
+    const lo = Math.max(0, Math.floor(Math.min(a, b)));
+    const hi = Math.min(this.n - 1, Math.ceil(Math.max(a, b)));
+    const torso = [];
+    const stand = [];
+    for (let i = lo; i <= hi; i++) {
+      if (this.bad[i]) continue;
+      const z = this.#sizeAt(i);
+      if (Number.isFinite(z.torso)) torso.push(z.torso);
+      if (Number.isFinite(z.stand)) stand.push(z.stand);
+    }
+    const t = torso.length >= 3 ? median(torso) : this.torso;
+    const h = stand.length >= Math.max(3, 0.3 * (hi - lo + 1)) ? quantile(stand, 0.9) / NOSE_TO_ANKLE : t / TORSO_TO_HEIGHT;
+    return { torso: t, bodyH: h };
+  }
+
   #measureScale() {
     const n = this.n;
     const torso = [];
@@ -160,49 +224,49 @@ export class Track {
     const sw = [];
     const SH = [LM.L_SHOULDER, LM.R_SHOULDER];
     const HIPS = [LM.L_HIP, LM.R_HIP];
-    const ANKLES = [LM.L_ANKLE, LM.R_ANKLE];
     for (let i = 0; i < n; i++) {
-      if (this.bad[i] || !this.ok(SH, i)) continue;
+      if (this.bad[i]) continue;
       sw.push(Math.abs(this.px[LM.L_SHOULDER][i] - this.px[LM.R_SHOULDER][i]));
-      if (!this.ok(HIPS, i)) continue;
-      const sx = (this.px[LM.L_SHOULDER][i] + this.px[LM.R_SHOULDER][i]) / 2;
-      const sy = (this.py[LM.L_SHOULDER][i] + this.py[LM.R_SHOULDER][i]) / 2;
-      const hx = (this.px[LM.L_HIP][i] + this.px[LM.R_HIP][i]) / 2;
-      const hy = (this.py[LM.L_HIP][i] + this.py[LM.R_HIP][i]) / 2;
-      torso.push(Math.hypot(sx - hx, sy - hy));
-      if (!this.ok(ANKLES, i) || !this.ok([LM.NOSE], i)) continue;
-      const ay = (this.py[LM.L_ANKLE][i] + this.py[LM.R_ANKLE][i]) / 2;
-      stand.push(ay - this.py[LM.NOSE][i]);
+      const z = this.#sizeAt(i);
+      if (Number.isFinite(z.torso)) torso.push(z.torso);
+      if (Number.isFinite(z.stand)) stand.push(z.stand);
     }
     const usable = Math.max(1, n - this.bad.reduce((a, b) => a + b, 0));
-    /** fraction of the clip in which both hips are in view */
+    /** fraction of the clip in which a hip (and its shoulder) is in view */
     this.hipsSeen = torso.length / usable;
-    /** fraction of the clip in which both ankles are in view */
+    /** fraction of the clip in which an ankle is in view */
     this.feetSeen = stand.length / usable;
-    /** torso length in pixels (mid-shoulder to mid-hip) */
+    /** torso length in pixels (shoulder to hip), typical for the clip */
     this.torso = torso.length ? median(torso) : NaN;
     /**
-     * Standing body height in pixels. Measured nose to ankle when the feet are in view;
-     * otherwise estimated from the torso, which is about 29% of standing height.
+     * Standing body height in pixels, typical for the clip. Measured nose to ankle when
+     * the feet are in view; otherwise estimated from the torso, about 29% of height.
+     * The median torso anchors it, so a walk past the camera does not inflate it.
      */
-    this.bodyH = stand.length >= Math.max(3, 0.2 * usable) ? quantile(stand, 0.9) / NOSE_TO_ANKLE : this.torso / TORSO_TO_HEIGHT;
+    this.bodyH = this.torso / TORSO_TO_HEIGHT;
+    if (stand.length >= Math.max(3, 0.2 * usable)) {
+      // Height per unit of torso, taken where both are seen, then scaled by the typical torso.
+      const ratios = [];
+      for (let i = 0; i < n; i++) {
+        if (this.bad[i]) continue;
+        const z = this.#sizeAt(i);
+        if (Number.isFinite(z.torso) && Number.isFinite(z.stand) && z.torso > 0) ratios.push(z.stand / z.torso);
+      }
+      if (ratios.length >= 3) this.bodyH = (quantile(ratios, 0.9) * this.torso) / NOSE_TO_ANKLE;
+    }
     /** apparent shoulder width in pixels (small in a side view) */
     this.shoulderW = sw.length ? median(sw) : NaN;
     if (this.hasWorld) {
       const sw3 = [];
+      const t3 = [];
       for (let i = 0; i < n; i += 2) {
-        if (this.bad[i] || !this.ok(SH, i)) continue;
+        if (this.bad[i]) continue;
         sw3.push(Math.hypot(
           this.wx[LM.L_SHOULDER][i] - this.wx[LM.R_SHOULDER][i],
           this.wy[LM.L_SHOULDER][i] - this.wy[LM.R_SHOULDER][i],
           this.wz[LM.L_SHOULDER][i] - this.wz[LM.R_SHOULDER][i],
         ));
-      }
-      /** true shoulder width in metres, from the 3D landmarks */
-      this.shoulderWm = sw3.length ? median(sw3) : NaN;
-      const t3 = [];
-      for (let i = 0; i < n; i += 2) {
-        if (this.bad[i] || !this.ok([...SH, ...HIPS], i)) continue;
+        if (!this.ok([...SH, ...HIPS], i)) continue;
         const mid = (arr, a, b) => (arr[a][i] + arr[b][i]) / 2;
         t3.push(Math.hypot(
           mid(this.wx, LM.L_SHOULDER, LM.R_SHOULDER) - mid(this.wx, LM.L_HIP, LM.R_HIP),
@@ -210,12 +274,35 @@ export class Track {
           mid(this.wz, LM.L_SHOULDER, LM.R_SHOULDER) - mid(this.wz, LM.L_HIP, LM.R_HIP),
         ));
       }
+      /** true shoulder width in metres, from the 3D landmarks */
+      this.shoulderWm = sw3.length ? median(sw3) : NaN;
       /** torso length in the 3D landmarks' own units, for scaling 3D heights */
       this.torsoM = t3.length ? median(t3) : NaN;
     } else {
       this.shoulderWm = NaN;
       this.torsoM = NaN;
     }
+  }
+
+  /**
+   * Torso length in pixels around each frame (the median over about two seconds). Heights
+   * given in torso lengths use it, so they stay right when the shooter moves nearer to or
+   * farther from the camera between shots.
+   */
+  torsoNear() {
+    return this.#sig('torsoNear', () => {
+      const n = this.n;
+      const per = new Float64Array(n);
+      for (let i = 0; i < n; i++) per[i] = this.bad[i] ? NaN : this.#sizeAt(i).torso;
+      const half = Math.max(2, Math.round(this.fps));
+      const out = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        const win = [];
+        for (let k = Math.max(0, i - half); k <= Math.min(n - 1, i + half); k++) if (Number.isFinite(per[k])) win.push(per[k]);
+        out[i] = win.length >= 5 ? median(win) : this.torso;
+      }
+      return lowpass(out, Math.min(1, this.fps / 4), this.fps);
+    });
   }
 
   // ---- Camera view ------------------------------------------------------------------
@@ -226,7 +313,7 @@ export class Track {
     const face = [];
     const FEET = [LM.L_TOE, LM.L_HEEL, LM.R_TOE, LM.R_HEEL];
     for (let i = 0; i < n; i++) {
-      if (this.bad[i] || !this.ok([LM.L_SHOULDER, LM.R_SHOULDER], i)) continue;
+      if (this.bad[i]) continue;
       order.push(this.px[LM.L_SHOULDER][i] - this.px[LM.R_SHOULDER][i]);
       const toes = this.ok(FEET, i) ? (this.px[LM.L_TOE][i] - this.px[LM.L_HEEL][i]) + (this.px[LM.R_TOE][i] - this.px[LM.R_HEEL][i]) : 0;
       const nose = this.px[LM.NOSE][i] - (this.px[LM.L_EAR][i] + this.px[LM.R_EAR][i]) / 2;
@@ -354,17 +441,30 @@ export class Track {
     });
   }
 
-  /** Height of the eye line (pixels, image y). */
+  /** Height of the eye line (pixels, image y), from whichever eye is in view. */
   eyeY() {
-    return this.mid(LM.L_EYE, LM.R_EYE).y;
+    return this.#sig('eyeY', () => {
+      const out = new Float64Array(this.n);
+      const l = this.py[LM.L_EYE];
+      const r = this.py[LM.R_EYE];
+      for (let i = 0; i < this.n; i++) {
+        const sl = this.seen[LM.L_EYE][i];
+        const sr = this.seen[LM.R_EYE][i];
+        out[i] = sl && !sr ? l[i] : sr && !sl ? r[i] : (l[i] + r[i]) / 2;
+      }
+      // The two eyes sit at nearly the same height, so switching between them is smooth
+      // enough; a light filter removes the step when one drops out.
+      return lowpass(out, Math.min(8, this.fps * 0.3), this.fps);
+    });
   }
 
   /** Wrist height above the same-side shoulder, in torso lengths (positive = above). */
   wristUp(side) {
     const s = sideOf(side);
     return this.#sig(`wristUp:${side}`, () => {
+      const torso = this.torsoNear();
       const out = new Float64Array(this.n);
-      for (let i = 0; i < this.n; i++) out[i] = (this.py[s.shoulder][i] - this.py[s.wrist][i]) / this.torso;
+      for (let i = 0; i < this.n; i++) out[i] = (this.py[s.shoulder][i] - this.py[s.wrist][i]) / torso[i];
       return out;
     });
   }
